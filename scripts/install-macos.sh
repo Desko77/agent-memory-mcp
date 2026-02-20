@@ -60,7 +60,7 @@ build_binary() {
     fi
 
     cd "$PROJECT_ROOT"
-    if ! go build -o "$BINARY_DST" .; then
+    if ! go build -o "$BINARY_DST" ./cmd/agent-memory-mcp; then
         log_error "Failed to build binary"
         exit 1
     fi

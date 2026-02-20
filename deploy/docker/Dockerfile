@@ -7,8 +7,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Build
-COPY *.go ./
-RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /agent-memory-mcp .
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /agent-memory-mcp ./cmd/agent-memory-mcp
 
 # ---
 FROM alpine:3.21
@@ -21,7 +21,7 @@ COPY --from=builder /agent-memory-mcp /usr/local/bin/agent-memory-mcp
 RUN mkdir -p /data/rag-index /data/memory-store /data/logs
 
 ENV MCP_HTTP_MODE=http \
-    MCP_HTTP_PORT=8080 \
+    MCP_HTTP_PORT=18080 \
     MCP_DATA_PATH=/data \
     MCP_RAG_INDEX_PATH=/data/rag-index \
     MCP_MEMORY_DB_PATH=/data/memory-store/memories.db \
@@ -29,7 +29,7 @@ ENV MCP_HTTP_MODE=http \
     MCP_MEMORY_ENABLED=true \
     MCP_RAG_ENABLED=true
 
-EXPOSE 8080
+EXPOSE 18080
 
 VOLUME ["/data"]
 

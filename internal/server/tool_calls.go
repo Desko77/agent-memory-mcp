@@ -1,13 +1,16 @@
-package main
+package server
 
 import (
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ipiton/agent-memory-mcp/internal/paths"
+	"github.com/ipiton/agent-memory-mcp/internal/search"
 )
 
-func (s *MCPServer) callRepoList(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callRepoList(args map[string]any) (any, *rpcError) {
 	path, _ := getString(args, "path")
 	maxDepth := s.config.MaxDepth
 	if val, ok := getInt(args, "max_depth"); ok {
@@ -18,7 +21,6 @@ func (s *MCPServer) callRepoList(args map[string]any) (any, *RPCError) {
 
 	if path == "" {
 		roots := s.pathGuard.AllowedRoots()
-		// If no allowlist specified, list from repo root
 		if len(roots) == 0 {
 			path = "."
 		} else {
@@ -35,21 +37,21 @@ func (s *MCPServer) callRepoList(args map[string]any) (any, *RPCError) {
 
 	abs, err := s.pathGuard.Resolve(path)
 	if err != nil {
-		return nil, &RPCError{Code: -32602, Message: err.Error()}
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
 	}
 
 	entries, err := walkList(abs, maxDepth, s.pathGuard)
 	if err != nil {
-		return nil, &RPCError{Code: -32603, Message: "failed to list", Data: err.Error()}
+		return nil, &rpcError{Code: -32603, Message: "failed to list", Data: err.Error()}
 	}
 
 	return toolResultJSON(entries), nil
 }
 
-func (s *MCPServer) callRepoRead(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callRepoRead(args map[string]any) (any, *rpcError) {
 	path, ok := getString(args, "path")
 	if !ok || path == "" {
-		return nil, &RPCError{Code: -32602, Message: "path is required"}
+		return nil, &rpcError{Code: -32602, Message: "path is required"}
 	}
 	maxBytes := s.config.MaxFileBytes
 	if val, ok := getInt64(args, "max_bytes"); ok {
@@ -66,31 +68,31 @@ func (s *MCPServer) callRepoRead(args map[string]any) (any, *RPCError) {
 
 	abs, err := s.pathGuard.Resolve(path)
 	if err != nil {
-		return nil, &RPCError{Code: -32602, Message: err.Error()}
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
 	}
 
 	info, err := os.Stat(abs)
 	if err != nil {
-		return nil, &RPCError{Code: -32603, Message: "failed to stat file", Data: err.Error()}
+		return nil, &rpcError{Code: -32603, Message: "failed to stat file", Data: err.Error()}
 	}
 	if info.IsDir() {
 		listing, err := listDirectory(abs, s.config.MaxDepth, s.pathGuard)
 		if err != nil {
-			return nil, &RPCError{Code: -32603, Message: "failed to list directory", Data: err.Error()}
+			return nil, &rpcError{Code: -32603, Message: "failed to list directory", Data: err.Error()}
 		}
 		return map[string]any{"path": path, "content": listing}, nil
 	}
-	content, _, err := readTextFile(abs, offset, maxBytes, info.Size())
+	content, _, err := search.ReadTextFile(abs, offset, maxBytes, info.Size())
 	if err != nil {
-		return nil, &RPCError{Code: -32603, Message: err.Error()}
+		return nil, &rpcError{Code: -32603, Message: err.Error()}
 	}
 	return toolResultText(fmt.Sprintf("path: %s\n\n%s", path, content)), nil
 }
 
-func (s *MCPServer) callRepoSearch(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callRepoSearch(args map[string]any) (any, *rpcError) {
 	query, ok := getString(args, "query")
 	if !ok || query == "" {
-		return nil, &RPCError{Code: -32602, Message: "query is required"}
+		return nil, &rpcError{Code: -32602, Message: "query is required"}
 	}
 	path, _ := getString(args, "path")
 	maxResults := s.config.MaxSearchResults
@@ -99,14 +101,14 @@ func (s *MCPServer) callRepoSearch(args map[string]any) (any, *RPCError) {
 			maxResults = val
 		}
 	}
-	matches, err := searchRepo(s.pathGuard, query, path, maxResults, s.config.MaxFileBytes)
+	matches, err := search.Repo(s.pathGuard, query, path, maxResults, s.config.MaxFileBytes)
 	if err != nil {
-		return nil, &RPCError{Code: -32603, Message: "search failed", Data: err.Error()}
+		return nil, &rpcError{Code: -32603, Message: "search failed", Data: err.Error()}
 	}
-	return toolResultText(formatMatches(matches)), nil
+	return toolResultText(search.FormatMatches(matches)), nil
 }
 
-func walkList(abs string, maxDepth int, guard *PathGuard) ([]map[string]any, error) {
+func walkList(abs string, maxDepth int, guard *paths.Guard) ([]map[string]any, error) {
 	entries := make([]map[string]any, 0, 64)
 	rootDepth := depth(abs)
 
@@ -114,7 +116,7 @@ func walkList(abs string, maxDepth int, guard *PathGuard) ([]map[string]any, err
 		if err != nil {
 			return err
 		}
-		if path != abs && shouldSkipDir(d.Name(), d.IsDir()) {
+		if path != abs && search.ShouldSkipDir(d.Name(), d.IsDir()) {
 			if d.IsDir() {
 				return filepath.SkipDir
 			}
@@ -168,7 +170,7 @@ func typeLabel(isDir bool) string {
 	return "file"
 }
 
-func listDirectory(abs string, maxDepth int, guard *PathGuard) (string, error) {
+func listDirectory(abs string, maxDepth int, guard *paths.Guard) (string, error) {
 	entries, err := walkList(abs, maxDepth, guard)
 	if err != nil {
 		return "", err

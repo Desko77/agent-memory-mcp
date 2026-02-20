@@ -1,4 +1,5 @@
-package main
+// Package vectorstore provides SQLite-backed vector storage with cosine similarity search.
+package vectorstore
 
 import (
 	"database/sql"
@@ -14,31 +15,22 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// VectorStore is the interface for vector storage backends
-type VectorStore interface {
-	// Upsert adds or updates chunks in the store
+// Store defines the interface for vector storage backends.
+type Store interface {
 	Upsert(chunks []Chunk) error
-
-	// DeleteByDocPath removes all chunks for a given document path
 	DeleteByDocPath(docPath string) error
-
-	// Search performs vector similarity search with optional filters
 	Search(queryEmbedding []float32, filters map[string]string, limit int) ([]SearchResult, error)
-
-	// Count returns the number of chunks in the store
 	Count() int
-
-	// Close closes the store
 	Close() error
 }
 
-// Chunk represents a document chunk with embedding
+// Chunk represents a document chunk with its embedding vector and metadata.
 type Chunk struct {
 	ID           string    `json:"id"`
-	DocPath      string    `json:"doc_path"` // Original document path (for deletion)
+	DocPath      string    `json:"doc_path"`
 	Content      string    `json:"content"`
 	Title        string    `json:"title"`
-	Path         string    `json:"path"` // Full path for display
+	Path         string    `json:"path"`
 	Type         string    `json:"type"`
 	Category     string    `json:"category"`
 	TaskSlug     string    `json:"task_slug"`
@@ -47,32 +39,36 @@ type Chunk struct {
 	Embedding    []float32 `json:"embedding"`
 }
 
-// SearchResult represents a search result with score
+// SearchResult represents a search result with its cosine similarity score.
 type SearchResult struct {
 	Chunk
 	Score float64 `json:"score"`
 }
 
-// SQLiteVectorStore implements VectorStore using SQLite for storage
-// and brute-force cosine similarity for search (no CGO extensions needed)
-type SQLiteVectorStore struct {
+// IndexedFileInfo represents metadata about an indexed file for change detection.
+type IndexedFileInfo struct {
+	FilePath   string
+	Hash       string
+	ModTime    time.Time
+	Size       int64
+	ChunkCount int
+}
+
+// SQLiteStore implements Store using SQLite with in-memory cosine similarity search.
+type SQLiteStore struct {
 	db     *sql.DB
 	logger *zap.Logger
 	mu     sync.RWMutex
-	// In-memory cache for fast search
 	chunks map[string]*Chunk
 }
 
-// NewSQLiteVectorStore creates a new SQLite-backed vector store.
-// dimension is the expected embedding vector size (e.g. 1024).
-// If the store already contains vectors with a different dimension, returns an error.
-func NewSQLiteVectorStore(dbPath string, dimension int, logger *zap.Logger) (*SQLiteVectorStore, error) {
+// NewSQLiteStore creates a new SQLite-backed vector store with the given embedding dimension.
+func NewSQLiteStore(dbPath string, dimension int, logger *zap.Logger) (*SQLiteStore, error) {
 	db, err := sql.Open("sqlite", dbPath+"?_journal_mode=WAL&_synchronous=NORMAL")
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SQLite database: %w", err)
 	}
 
-	// Create schema
 	schema := `
 	CREATE TABLE IF NOT EXISTS chunks (
 		id TEXT PRIMARY KEY,
@@ -110,19 +106,17 @@ func NewSQLiteVectorStore(dbPath string, dimension int, logger *zap.Logger) (*SQ
 		return nil, fmt.Errorf("failed to create schema: %w", err)
 	}
 
-	store := &SQLiteVectorStore{
+	store := &SQLiteStore{
 		db:     db,
 		logger: logger,
 		chunks: make(map[string]*Chunk),
 	}
 
-	// Validate embedding dimension consistency
 	if err := store.validateDimension(dimension); err != nil {
 		db.Close()
 		return nil, err
 	}
 
-	// Load chunks into memory for fast search
 	if err := store.loadChunksToMemory(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("failed to load chunks: %w", err)
@@ -136,18 +130,14 @@ func NewSQLiteVectorStore(dbPath string, dimension int, logger *zap.Logger) (*SQ
 	return store, nil
 }
 
-// validateDimension checks that the configured dimension matches the stored one.
-// On first use, saves the dimension. On subsequent uses, verifies consistency.
-func (s *SQLiteVectorStore) validateDimension(dimension int) error {
+func (s *SQLiteStore) validateDimension(dimension int) error {
 	stored, err := s.GetMetadata("embedding_dimension")
 	if err != nil {
-		// No dimension stored yet — save it
 		return s.SetMetadata("embedding_dimension", strconv.Itoa(dimension))
 	}
 
 	storedDim, err := strconv.Atoi(stored)
 	if err != nil {
-		// Corrupted value — overwrite
 		return s.SetMetadata("embedding_dimension", strconv.Itoa(dimension))
 	}
 
@@ -163,8 +153,7 @@ func (s *SQLiteVectorStore) validateDimension(dimension int) error {
 	return nil
 }
 
-// loadChunksToMemory loads all chunks from SQLite into memory cache
-func (s *SQLiteVectorStore) loadChunksToMemory() error {
+func (s *SQLiteStore) loadChunksToMemory() error {
 	rows, err := s.db.Query(`
 		SELECT id, doc_path, content, title, path, type, category,
 		       task_slug, task_phase, last_modified, embedding
@@ -199,7 +188,6 @@ func (s *SQLiteVectorStore) loadChunksToMemory() error {
 			chunk.LastModified = lastModified.Time
 		}
 
-		// Decode embedding from JSON blob
 		if err := json.Unmarshal(embeddingBlob, &chunk.Embedding); err != nil {
 			s.logger.Warn("Failed to unmarshal embedding", zap.String("id", chunk.ID), zap.Error(err))
 			continue
@@ -211,8 +199,8 @@ func (s *SQLiteVectorStore) loadChunksToMemory() error {
 	return rows.Err()
 }
 
-// Upsert adds or updates chunks in the store
-func (s *SQLiteVectorStore) Upsert(chunks []Chunk) error {
+// Upsert inserts or replaces chunks in the store within a single transaction.
+func (s *SQLiteStore) Upsert(chunks []Chunk) error {
 	if len(chunks) == 0 {
 		return nil
 	}
@@ -253,7 +241,6 @@ func (s *SQLiteVectorStore) Upsert(chunks []Chunk) error {
 			continue
 		}
 
-		// Update in-memory cache
 		chunkCopy := chunk
 		s.chunks[chunk.ID] = &chunkCopy
 	}
@@ -261,9 +248,8 @@ func (s *SQLiteVectorStore) Upsert(chunks []Chunk) error {
 	return tx.Commit()
 }
 
-// DeleteByDocPath removes all chunks for a given document path
-func (s *SQLiteVectorStore) DeleteByDocPath(docPath string) error {
-	// First, find all chunk IDs for this doc_path
+// DeleteByDocPath removes all chunks associated with the given document path.
+func (s *SQLiteStore) DeleteByDocPath(docPath string) error {
 	rows, err := s.db.Query("SELECT id FROM chunks WHERE doc_path = ?", docPath)
 	if err != nil {
 		return fmt.Errorf("failed to query chunks: %w", err)
@@ -279,16 +265,14 @@ func (s *SQLiteVectorStore) DeleteByDocPath(docPath string) error {
 	rows.Close()
 
 	if len(ids) == 0 {
-		return nil // Nothing to delete
+		return nil
 	}
 
-	// Delete from database
 	_, err = s.db.Exec("DELETE FROM chunks WHERE doc_path = ?", docPath)
 	if err != nil {
 		return fmt.Errorf("failed to delete chunks: %w", err)
 	}
 
-	// Remove from memory cache
 	s.mu.Lock()
 	for _, id := range ids {
 		delete(s.chunks, id)
@@ -302,13 +286,12 @@ func (s *SQLiteVectorStore) DeleteByDocPath(docPath string) error {
 	return nil
 }
 
-// Search performs vector similarity search with optional filters
-func (s *SQLiteVectorStore) Search(queryEmbedding []float32, filters map[string]string, limit int) ([]SearchResult, error) {
+// Search finds the most similar chunks to the query embedding, filtered and ranked by cosine similarity.
+func (s *SQLiteStore) Search(queryEmbedding []float32, filters map[string]string, limit int) ([]SearchResult, error) {
 	s.mu.RLock()
 	chunksEmpty := len(s.chunks) == 0
 	s.mu.RUnlock()
 
-	// Try to reload if empty (outside of lock)
 	if chunksEmpty {
 		if err := s.loadChunksToMemory(); err != nil {
 			return nil, fmt.Errorf("failed to reload chunks: %w", err)
@@ -319,20 +302,16 @@ func (s *SQLiteVectorStore) Search(queryEmbedding []float32, filters map[string]
 	defer s.mu.RUnlock()
 
 	if len(s.chunks) == 0 {
-		// No documents indexed - return empty results, not error
 		return []SearchResult{}, nil
 	}
 
-	// Calculate similarities and filter
 	var results []SearchResult
 	for _, chunk := range s.chunks {
-		// Apply filters
 		if !matchFilters(chunk, filters) {
 			continue
 		}
 
-		// Calculate cosine similarity
-		score := cosineSimilarity(queryEmbedding, chunk.Embedding)
+		score := CosineSimilarity(queryEmbedding, chunk.Embedding)
 
 		results = append(results, SearchResult{
 			Chunk: *chunk,
@@ -340,12 +319,10 @@ func (s *SQLiteVectorStore) Search(queryEmbedding []float32, filters map[string]
 		})
 	}
 
-	// Sort by score descending
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].Score > results[j].Score
 	})
 
-	// Limit results
 	if len(results) > limit {
 		results = results[:limit]
 	}
@@ -353,22 +330,22 @@ func (s *SQLiteVectorStore) Search(queryEmbedding []float32, filters map[string]
 	return results, nil
 }
 
-// Count returns the number of chunks in the store
-func (s *SQLiteVectorStore) Count() int {
+// Count returns the number of chunks currently loaded in memory.
+func (s *SQLiteStore) Count() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.chunks)
 }
 
-// Close closes the store
-func (s *SQLiteVectorStore) Close() error {
+// Close closes the underlying SQLite database connection.
+func (s *SQLiteStore) Close() error {
 	return s.db.Close()
 }
 
 // === Metadata Methods ===
 
-// GetMetadata retrieves a metadata value by key
-func (s *SQLiteVectorStore) GetMetadata(key string) (string, error) {
+// GetMetadata retrieves a metadata value by key from the index_metadata table.
+func (s *SQLiteStore) GetMetadata(key string) (string, error) {
 	var value string
 	err := s.db.QueryRow("SELECT value FROM index_metadata WHERE key = ?", key).Scan(&value)
 	if err == sql.ErrNoRows {
@@ -377,25 +354,18 @@ func (s *SQLiteVectorStore) GetMetadata(key string) (string, error) {
 	return value, err
 }
 
-// SetMetadata sets a metadata value
-func (s *SQLiteVectorStore) SetMetadata(key, value string) error {
+// SetMetadata stores a key-value pair in the index_metadata table.
+func (s *SQLiteStore) SetMetadata(key, value string) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO index_metadata (key, value) VALUES (?, ?)
 	`, key, value)
 	return err
 }
 
-// IndexedFileInfo represents info about an indexed file
-type IndexedFileInfo struct {
-	FilePath   string
-	Hash       string
-	ModTime    time.Time
-	Size       int64
-	ChunkCount int
-}
+// === Indexed Files Methods ===
 
-// GetIndexedFile retrieves info about an indexed file
-func (s *SQLiteVectorStore) GetIndexedFile(filePath string) (*IndexedFileInfo, error) {
+// GetIndexedFile retrieves indexing metadata for a file, or nil if not indexed.
+func (s *SQLiteStore) GetIndexedFile(filePath string) (*IndexedFileInfo, error) {
 	var info IndexedFileInfo
 	var modTime sql.NullTime
 	err := s.db.QueryRow(`
@@ -414,8 +384,8 @@ func (s *SQLiteVectorStore) GetIndexedFile(filePath string) (*IndexedFileInfo, e
 	return &info, nil
 }
 
-// SetIndexedFile saves info about an indexed file
-func (s *SQLiteVectorStore) SetIndexedFile(info *IndexedFileInfo) error {
+// SetIndexedFile stores or updates indexing metadata for a file.
+func (s *SQLiteStore) SetIndexedFile(info *IndexedFileInfo) error {
 	_, err := s.db.Exec(`
 		INSERT OR REPLACE INTO indexed_files (file_path, hash, mod_time, size, chunk_count)
 		VALUES (?, ?, ?, ?, ?)
@@ -423,14 +393,14 @@ func (s *SQLiteVectorStore) SetIndexedFile(info *IndexedFileInfo) error {
 	return err
 }
 
-// DeleteIndexedFile removes an indexed file record
-func (s *SQLiteVectorStore) DeleteIndexedFile(filePath string) error {
+// DeleteIndexedFile removes indexing metadata for a file.
+func (s *SQLiteStore) DeleteIndexedFile(filePath string) error {
 	_, err := s.db.Exec("DELETE FROM indexed_files WHERE file_path = ?", filePath)
 	return err
 }
 
-// GetAllIndexedFiles returns all indexed file paths
-func (s *SQLiteVectorStore) GetAllIndexedFiles() (map[string]*IndexedFileInfo, error) {
+// GetAllIndexedFiles returns indexing metadata for all tracked files.
+func (s *SQLiteStore) GetAllIndexedFiles() (map[string]*IndexedFileInfo, error) {
 	rows, err := s.db.Query("SELECT file_path, hash, mod_time, size, chunk_count FROM indexed_files")
 	if err != nil {
 		return nil, err
@@ -452,7 +422,6 @@ func (s *SQLiteVectorStore) GetAllIndexedFiles() (map[string]*IndexedFileInfo, e
 	return result, rows.Err()
 }
 
-// matchFilters checks if a chunk matches all filters
 func matchFilters(chunk *Chunk, filters map[string]string) bool {
 	if len(filters) == 0 {
 		return true
@@ -473,7 +442,7 @@ func matchFilters(chunk *Chunk, filters map[string]string) bool {
 			chunkValue = chunk.TaskSlug
 		case "task_phase":
 			chunkValue = chunk.TaskPhase
-		case "doc_type": // Alias for type
+		case "doc_type":
 			chunkValue = chunk.Type
 		default:
 			continue
@@ -487,8 +456,8 @@ func matchFilters(chunk *Chunk, filters map[string]string) bool {
 	return true
 }
 
-// cosineSimilarity calculates cosine similarity between two vectors
-func cosineSimilarity(a, b []float32) float64 {
+// CosineSimilarity calculates the cosine similarity between two vectors.
+func CosineSimilarity(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
 	}

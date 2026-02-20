@@ -1,7 +1,9 @@
-package main
+// Package server implements the MCP protocol server with stdio and HTTP transports.
+package server
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,58 +14,63 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ipiton/agent-memory-mcp/internal/config"
+	"github.com/ipiton/agent-memory-mcp/internal/embedder"
+	"github.com/ipiton/agent-memory-mcp/internal/logger"
+	"github.com/ipiton/agent-memory-mcp/internal/memory"
+	"github.com/ipiton/agent-memory-mcp/internal/paths"
+	"github.com/ipiton/agent-memory-mcp/internal/rag"
+	"github.com/ipiton/agent-memory-mcp/internal/stats"
 	"go.uber.org/zap"
 )
 
-// Note: strings, time, filepath used in NewMCPServer
+const maxRequestBodyBytes = 10 * 1024 * 1024 // 10 MB
 
 const protocolVersion = "2024-11-05"
 
 // JSON-RPC structures
 
-type RPCRequest struct {
+type rpcRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method"`
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-type RPCResponse struct {
+type rpcResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
 	Result  any             `json:"result,omitempty"`
-	Error   *RPCError       `json:"error,omitempty"`
+	Error   *rpcError       `json:"error,omitempty"`
 }
 
-type RPCError struct {
+type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
 	Data    any    `json:"data,omitempty"`
 }
 
-// MCP server
-
+// MCPServer implements the MCP protocol server with RAG and memory capabilities.
 type MCPServer struct {
-	config      Config
-	pathGuard   *PathGuard
+	config      config.Config
+	pathGuard   *paths.Guard
 	outputMode  string
-	stats       *StatsLogger
-	ragEngine   *RAGEngine
-	memoryStore *MemoryStore
-	fileLogger  *FileLogger
+	stats       *stats.Logger
+	ragEngine   *rag.Engine
+	memoryStore *memory.Store
+	fileLogger  *logger.FileLogger
 }
 
-func NewMCPServer(cfg Config, guard *PathGuard) *MCPServer {
-	var ragEngine *RAGEngine
-	var memoryStore *MemoryStore
-	var fileLogger *FileLogger
+// New creates a new MCPServer with the given configuration and path guard.
+func New(cfg config.Config, guard *paths.Guard) *MCPServer {
+	var ragEngine *rag.Engine
+	var memoryStore *memory.Store
+	var fileLogger *logger.FileLogger
 
-	// Initialize file logger for diagnostics
 	if cfg.LogPath != "" {
 		var err error
-		fileLogger, err = NewFileLogger(cfg.LogPath)
+		fileLogger, err = logger.New(cfg.LogPath)
 		if err != nil {
-			// Log to stderr if file logger fails (but don't fail server startup)
 			fmt.Fprintf(os.Stderr, "warning: failed to create file logger: %v\n", err)
 		} else {
 			fileLogger.Info("MCP server initializing",
@@ -75,14 +82,13 @@ func NewMCPServer(cfg Config, guard *PathGuard) *MCPServer {
 		}
 	}
 
-	// Initialize RAG if enabled
 	if cfg.RAGEnabled {
-		ragEngine = NewRAGEngine(cfg, fileLogger)
+		ragEngine = rag.NewEngine(cfg, fileLogger)
 		if ragEngine == nil {
 			if fileLogger != nil {
 				fileLogger.Warn("RAG engine initialization failed - RAG features will be unavailable",
 					zap.String("rag_index_path", cfg.RAGIndexPath),
-					zap.String("jina_api_key_set", boolToString(cfg.JinaAPIKey != "")),
+					zap.String("jina_api_key_set", config.BoolToString(cfg.JinaAPIKey != "")),
 					zap.String("ollama_url", cfg.OllamaBaseURL),
 				)
 			}
@@ -99,34 +105,29 @@ func NewMCPServer(cfg Config, guard *PathGuard) *MCPServer {
 		}
 	}
 
-	// Initialize memory store if enabled (uses config paths)
 	if cfg.MemoryEnabled {
-		// Ensure directory exists
 		if err := os.MkdirAll(filepath.Dir(cfg.MemoryDBPath), 0755); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: failed to create memory store directory: %v\n", err)
 		}
 
-		// Get embedder from RAG if available, otherwise create minimal embedder
-		var embedder *Embedder
-		if ragEngine != nil && ragEngine.vecService != nil {
-			embedder = ragEngine.vecService.config.Embedder
-		} else {
-			// Create a minimal embedder for memory store
-			var err error
-			embedder, err = NewEmbedder(EmbedderConfig{
-				JinaToken:     cfg.JinaAPIKey,
-				OllamaBaseURL: cfg.OllamaBaseURL,
-				MaxRetries:    1,
-				Timeout:       5 * time.Second,
+		var emb *embedder.Embedder
+		// Create a minimal embedder for memory store
+		var err error
+		emb, err = embedder.New(embedder.Config{
+			JinaToken:     cfg.JinaAPIKey,
+			OpenAIToken:   cfg.OpenAIAPIKey,
+			OpenAIBaseURL: cfg.OpenAIBaseURL,
+			OpenAIModel:   cfg.OpenAIModel,
+			OllamaBaseURL: cfg.OllamaBaseURL,
+			Dimension:     cfg.EmbeddingDimension,
+			MaxRetries:    1,
+			Timeout:       5 * time.Second,
 		}, zap.NewNop())
-			if err != nil {
-				embedder = nil // Memory store will use text search fallback
-			}
+		if err != nil {
+			emb = nil
 		}
 
-		// Create memory store using config path
-		var err error
-		memoryStore, err = NewMemoryStore(cfg.MemoryDBPath, embedder, zap.NewNop())
+		memoryStore, err = memory.NewStore(cfg.MemoryDBPath, emb, zap.NewNop())
 		if err != nil {
 			if fileLogger != nil {
 				fileLogger.Warn("Memory store initialization failed - memory features will be unavailable",
@@ -155,21 +156,14 @@ func NewMCPServer(cfg Config, guard *PathGuard) *MCPServer {
 		config:      cfg,
 		pathGuard:   guard,
 		outputMode:  cfg.OutputMode,
-		stats:       NewStatsLogger(cfg),
+		stats:       stats.NewLogger(cfg),
 		ragEngine:   ragEngine,
 		memoryStore: memoryStore,
 		fileLogger:  fileLogger,
 	}
 }
 
-// boolToString converts bool to string for logging
-func boolToString(b bool) string {
-	if b {
-		return "yes"
-	}
-	return "no"
-}
-
+// RunStdio runs the server in stdio mode, reading JSON-RPC requests from stdin.
 func RunStdio(server *MCPServer) error {
 	reader := bufio.NewReader(os.Stdin)
 	writer := bufio.NewWriter(os.Stdout)
@@ -189,7 +183,7 @@ func RunStdio(server *MCPServer) error {
 			continue
 		}
 
-		var req RPCRequest
+		var req rpcRequest
 		if err := json.Unmarshal(payload, &req); err != nil {
 			resp := errorResponse(nil, -32600, "invalid request", err.Error())
 			if err := writeResponse(writer, resp, server.outputMode); err != nil {
@@ -198,7 +192,7 @@ func RunStdio(server *MCPServer) error {
 			continue
 		}
 
-		resp := server.Handle(req)
+		resp := server.handle(req)
 		if resp == nil {
 			continue
 		}
@@ -208,17 +202,26 @@ func RunStdio(server *MCPServer) error {
 	}
 }
 
-func RunHTTP(server *MCPServer) error {
+// RunHTTP runs the server in HTTP mode, blocking until ctx is cancelled
+// and then gracefully shutting down.
+func RunHTTP(ctx context.Context, server *MCPServer) error {
 	mux := http.NewServeMux()
 
-	// JSON-RPC endpoint
-	mux.HandleFunc("/rpc", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 
-		var req RPCRequest
+		ct := r.Header.Get("Content-Type")
+		if ct != "" && !strings.HasPrefix(ct, "application/json") {
+			http.Error(w, "Content-Type must be application/json", http.StatusUnsupportedMediaType)
+			return
+		}
+
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+
+		var req rpcRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			resp := errorResponse(nil, -32600, "Parse error", err.Error())
 			w.Header().Set("Content-Type", "application/json")
@@ -226,9 +229,8 @@ func RunHTTP(server *MCPServer) error {
 			return
 		}
 
-		resp := server.Handle(req)
+		resp := server.handle(req)
 		if resp == nil {
-			// Notification - no response
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
@@ -237,12 +239,11 @@ func RunHTTP(server *MCPServer) error {
 		json.NewEncoder(w).Encode(resp)
 	})
 
-	// Health check endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]any{
-			"status":          "ok",
-			"rag_available":   server.ragEngine != nil,
+			"status":           "ok",
+			"rag_available":    server.ragEngine != nil,
 			"memory_available": server.memoryStore != nil,
 		})
 	})
@@ -255,10 +256,36 @@ func RunHTTP(server *MCPServer) error {
 		)
 	}
 
-	return http.ListenAndServe(addr, mux)
+	httpServer := &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	select {
+	case err := <-errCh:
+		return fmt.Errorf("http server failed: %w", err)
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			return fmt.Errorf("http server shutdown failed: %w", err)
+		}
+		return nil
+	}
 }
 
-func (s *MCPServer) Handle(req RPCRequest) *RPCResponse {
+func (s *MCPServer) handle(req rpcRequest) *rpcResponse {
 	if isNotification(req.ID) {
 		s.handleNotification(req)
 		return nil
@@ -266,21 +293,21 @@ func (s *MCPServer) Handle(req RPCRequest) *RPCResponse {
 
 	result, rpcErr := s.dispatch(req)
 	if rpcErr != nil {
-		return &RPCResponse{
+		return &rpcResponse{
 			JSONRPC: "2.0",
 			ID:      req.ID,
 			Error:   rpcErr,
 		}
 	}
 
-	return &RPCResponse{
+	return &rpcResponse{
 		JSONRPC: "2.0",
 		ID:      req.ID,
 		Result:  result,
 	}
 }
 
-func (s *MCPServer) handleNotification(req RPCRequest) {
+func (s *MCPServer) handleNotification(req rpcRequest) {
 	switch req.Method {
 	case "initialized":
 		return
@@ -289,7 +316,7 @@ func (s *MCPServer) handleNotification(req RPCRequest) {
 	}
 }
 
-func (s *MCPServer) dispatch(req RPCRequest) (any, *RPCError) {
+func (s *MCPServer) dispatch(req rpcRequest) (any, *rpcError) {
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(req.Params)
@@ -302,11 +329,11 @@ func (s *MCPServer) dispatch(req RPCRequest) (any, *RPCError) {
 	case "tools/call":
 		return s.handleToolsCall(req.Params)
 	default:
-		return nil, &RPCError{Code: -32601, Message: "method not found"}
+		return nil, &rpcError{Code: -32601, Message: "method not found"}
 	}
 }
 
-func (s *MCPServer) handleInitialize(_ json.RawMessage) (any, *RPCError) {
+func (s *MCPServer) handleInitialize(_ json.RawMessage) (any, *rpcError) {
 	return map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities": map[string]any{
@@ -324,6 +351,19 @@ func (s *MCPServer) handleInitialize(_ json.RawMessage) (any, *RPCError) {
 	}, nil
 }
 
+// Shutdown gracefully shuts down the server, closing all resources.
+func (s *MCPServer) Shutdown() {
+	if s.ragEngine != nil {
+		s.ragEngine.Stop()
+	}
+	if s.memoryStore != nil {
+		s.memoryStore.Close()
+	}
+	if s.fileLogger != nil {
+		s.fileLogger.Sync()
+	}
+}
+
 func isNotification(id json.RawMessage) bool {
 	if len(id) == 0 {
 		return true
@@ -334,11 +374,11 @@ func isNotification(id json.RawMessage) bool {
 	return false
 }
 
-func errorResponse(id json.RawMessage, code int, message string, data any) *RPCResponse {
-	return &RPCResponse{
+func errorResponse(id json.RawMessage, code int, message string, data any) *rpcResponse {
+	return &rpcResponse{
 		JSONRPC: "2.0",
 		ID:      id,
-		Error: &RPCError{
+		Error: &rpcError{
 			Code:    code,
 			Message: message,
 			Data:    data,
@@ -393,7 +433,7 @@ func readMessage(r *bufio.Reader) ([]byte, string, error) {
 	return payload, "content-length", nil
 }
 
-func writeResponse(w *bufio.Writer, resp *RPCResponse, mode string) error {
+func writeResponse(w *bufio.Writer, resp *rpcResponse, mode string) error {
 	payload, err := json.Marshal(resp)
 	if err != nil {
 		return err

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"encoding/json"
@@ -9,31 +9,34 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/ipiton/agent-memory-mcp/internal/search"
+	"github.com/ipiton/agent-memory-mcp/internal/stats"
 )
 
-type Resource struct {
+type resource struct {
 	URI         string `json:"uri"`
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	MimeType    string `json:"mimeType,omitempty"`
 }
 
-type ResourceContent struct {
+type resourceContent struct {
 	URI      string `json:"uri"`
 	MimeType string `json:"mimeType,omitempty"`
 	Text     string `json:"text"`
 }
 
-func (s *MCPServer) handleResourcesList(_ json.RawMessage) (any, *RPCError) {
+func (s *MCPServer) handleResourcesList(_ json.RawMessage) (any, *rpcError) {
 	roots := s.pathGuard.AllowedRoots()
-	resources := make([]Resource, 0, len(roots))
+	resources := make([]resource, 0, len(roots))
 	for _, root := range roots {
 		uri := buildURI(root.Rel)
 		name := filepath.Base(root.Rel)
 		if name == "." || name == "" {
 			name = root.Rel
 		}
-		resources = append(resources, Resource{
+		resources = append(resources, resource{
 			URI:         uri,
 			Name:        name,
 			Description: fmt.Sprintf("Repository path: %s", root.Rel),
@@ -45,63 +48,63 @@ func (s *MCPServer) handleResourcesList(_ json.RawMessage) (any, *RPCError) {
 	return map[string]any{"resources": resources}, nil
 }
 
-func (s *MCPServer) handleResourcesRead(params json.RawMessage) (any, *RPCError) {
+func (s *MCPServer) handleResourcesRead(params json.RawMessage) (any, *rpcError) {
 	start := time.Now()
 	var req struct {
 		URI string `json:"uri"`
 	}
-	var rpcErr *RPCError
+	var rErr *rpcError
 	var relPath string
 	defer func() {
 		if s.stats == nil {
 			return
 		}
-		event := StatsEvent{
-			Event:      "resource_read",
+		event := stats.Event{
+			EventName:  "resource_read",
 			Method:     "resources/read",
 			Path:       relPath,
 			DurationMs: time.Since(start).Milliseconds(),
-			Success:    rpcErr == nil,
+			Success:    rErr == nil,
 		}
-		if rpcErr != nil {
-			event.Error = rpcErr.Message
+		if rErr != nil {
+			event.Error = rErr.Message
 		}
 		s.stats.Log(event)
 	}()
 	if err := json.Unmarshal(params, &req); err != nil {
-		rpcErr = &RPCError{Code: -32602, Message: "invalid params", Data: err.Error()}
-		return nil, rpcErr
+		rErr = &rpcError{Code: -32602, Message: "invalid params", Data: err.Error()}
+		return nil, rErr
 	}
 	if req.URI == "" {
-		rpcErr = &RPCError{Code: -32602, Message: "uri is required"}
-		return nil, rpcErr
+		rErr = &rpcError{Code: -32602, Message: "uri is required"}
+		return nil, rErr
 	}
 	path, err := parseURI(req.URI)
 	if err != nil {
-		rpcErr = &RPCError{Code: -32602, Message: err.Error()}
-		return nil, rpcErr
+		rErr = &rpcError{Code: -32602, Message: err.Error()}
+		return nil, rErr
 	}
 	relPath = path
 
 	abs, err := s.pathGuard.Resolve(path)
 	if err != nil {
-		rpcErr = &RPCError{Code: -32602, Message: err.Error()}
-		return nil, rpcErr
+		rErr = &rpcError{Code: -32602, Message: err.Error()}
+		return nil, rErr
 	}
 
 	info, err := os.Stat(abs)
 	if err != nil {
-		rpcErr = &RPCError{Code: -32603, Message: "failed to stat path", Data: err.Error()}
-		return nil, rpcErr
+		rErr = &rpcError{Code: -32603, Message: "failed to stat path", Data: err.Error()}
+		return nil, rErr
 	}
 
 	if info.IsDir() {
 		listing, err := listDirectory(abs, s.config.MaxDepth, s.pathGuard)
 		if err != nil {
-			rpcErr = &RPCError{Code: -32603, Message: "failed to list directory", Data: err.Error()}
-			return nil, rpcErr
+			rErr = &rpcError{Code: -32603, Message: "failed to list directory", Data: err.Error()}
+			return nil, rErr
 		}
-		return map[string]any{"contents": []ResourceContent{
+		return map[string]any{"contents": []resourceContent{
 			{
 				URI:      req.URI,
 				MimeType: "text/plain",
@@ -110,14 +113,14 @@ func (s *MCPServer) handleResourcesRead(params json.RawMessage) (any, *RPCError)
 		}}, nil
 	}
 
-	content, _, err := readTextFile(abs, 0, s.config.MaxFileBytes, info.Size())
+	content, _, err := search.ReadTextFile(abs, 0, s.config.MaxFileBytes, info.Size())
 	if err != nil {
-		rpcErr = &RPCError{Code: -32603, Message: err.Error()}
-		return nil, rpcErr
+		rErr = &rpcError{Code: -32603, Message: err.Error()}
+		return nil, rErr
 	}
 
 	mimeType := mime.TypeByExtension(filepath.Ext(abs))
-	return map[string]any{"contents": []ResourceContent{
+	return map[string]any{"contents": []resourceContent{
 		{
 			URI:      req.URI,
 			MimeType: mimeType,

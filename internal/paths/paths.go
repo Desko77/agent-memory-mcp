@@ -1,4 +1,5 @@
-package main
+// Package paths provides path resolution and allowlist-based access control.
+package paths
 
 import (
 	"errors"
@@ -6,20 +7,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ipiton/agent-memory-mcp/internal/config"
 )
 
+// AllowedPath represents a resolved allowlisted path with its metadata.
 type AllowedPath struct {
 	Rel    string
 	Abs    string
 	IsFile bool
 }
 
-type PathGuard struct {
+// Guard enforces path-based access control against a configured allowlist.
+type Guard struct {
 	root    string
 	allowed []AllowedPath
 }
 
-func NewPathGuard(cfg Config) (*PathGuard, error) {
+// NewGuard creates a Guard from the configured root and allowed paths.
+func NewGuard(cfg config.Config) (*Guard, error) {
 	allowed := make([]AllowedPath, 0, len(cfg.AllowedPaths))
 	for _, rel := range cfg.AllowedPaths {
 		abs := filepath.Join(cfg.RootPath, rel)
@@ -38,10 +44,11 @@ func NewPathGuard(cfg Config) (*PathGuard, error) {
 			IsFile: isFile,
 		})
 	}
-	return &PathGuard{root: cfg.RootPath, allowed: allowed}, nil
+	return &Guard{root: cfg.RootPath, allowed: allowed}, nil
 }
 
-func (g *PathGuard) Resolve(rel string) (string, error) {
+// Resolve converts a relative path to an absolute path and validates access.
+func (g *Guard) Resolve(rel string) (string, error) {
 	if rel == "" {
 		return "", errors.New("path is required")
 	}
@@ -66,8 +73,8 @@ func (g *PathGuard) Resolve(rel string) (string, error) {
 	return resolved, nil
 }
 
-func (g *PathGuard) IsAllowed(abs string) bool {
-	// If no allowed paths specified, allow everything
+// IsAllowed reports whether the absolute path is within the allowlist.
+func (g *Guard) IsAllowed(abs string) bool {
 	if len(g.allowed) == 0 {
 		return true
 	}
@@ -89,11 +96,13 @@ func (g *PathGuard) IsAllowed(abs string) bool {
 	return false
 }
 
-func (g *PathGuard) AllowedRoots() []AllowedPath {
+// AllowedRoots returns a copy of the configured allowed paths.
+func (g *Guard) AllowedRoots() []AllowedPath {
 	return append([]AllowedPath{}, g.allowed...)
 }
 
-func (g *PathGuard) RelPath(abs string) (string, error) {
+// RelPath returns the slash-separated path relative to the root.
+func (g *Guard) RelPath(abs string) (string, error) {
 	rel, err := filepath.Rel(g.root, abs)
 	if err != nil {
 		return "", err

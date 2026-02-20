@@ -7,11 +7,9 @@ logs/
 .claude/
 .DS_Store
 scripts/
-system/
+docs/
+deploy/
 *.md
 !go.mod
 !go.sum
 LICENSE
-Makefile
-Dockerfile
-docker-compose.yml

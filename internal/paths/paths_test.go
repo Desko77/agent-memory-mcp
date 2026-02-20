@@ -1,12 +1,14 @@
-package main
+package paths
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ipiton/agent-memory-mcp/internal/config"
 )
 
-func TestPathGuardResolve(t *testing.T) {
+func TestGuardResolve(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "docs"), 0o755); err != nil {
 		t.Fatalf("mkdir docs: %v", err)
@@ -19,11 +21,11 @@ func TestPathGuardResolve(t *testing.T) {
 		t.Fatalf("write docs: %v", err)
 	}
 
-	cfg := Config{
+	cfg := config.Config{
 		RootPath:     root,
 		AllowedPaths: []string{"AGENTS.md", "docs"},
 	}
-	guard, err := NewPathGuard(cfg)
+	guard, err := NewGuard(cfg)
 	if err != nil {
 		t.Fatalf("guard: %v", err)
 	}

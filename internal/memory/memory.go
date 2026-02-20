@@ -1,4 +1,5 @@
-package main
+// Package memory provides persistent agent memory storage with semantic vector search.
+package memory
 
 import (
 	"database/sql"
@@ -11,25 +12,27 @@ import (
 	"unicode"
 
 	"github.com/google/uuid"
+	"github.com/ipiton/agent-memory-mcp/internal/embedder"
+	"github.com/ipiton/agent-memory-mcp/internal/vectorstore"
 	"go.uber.org/zap"
 	_ "modernc.org/sqlite" // SQLite driver
 )
 
-// MemoryType represents different types of memories
-type MemoryType string
+// Type represents the category of a memory entry.
+type Type string
 
 const (
-		MemoryTypeEpisodic   MemoryType = "episodic"   // Events and actions
-	MemoryTypeSemantic   MemoryType = "semantic"   // Facts and knowledge
-	MemoryTypeProcedural MemoryType = "procedural" // Patterns and skills
-	MemoryTypeWorking    MemoryType = "working"    // Short-term working memory
+	TypeEpisodic   Type = "episodic"   // Events and actions
+	TypeSemantic   Type = "semantic"   // Facts and knowledge
+	TypeProcedural Type = "procedural" // Patterns and skills
+	TypeWorking    Type = "working"    // Short-term working memory
 )
 
-// Memory represents a stored memory entry
+// Memory represents a stored memory entry with content, metadata, and embedding.
 type Memory struct {
 	ID          string            `json:"id"`
 	Content     string            `json:"content"`
-	Type        MemoryType        `json:"type"`
+	Type        Type              `json:"type"`
 	Title       string            `json:"title,omitempty"`
 	Tags        []string          `json:"tags,omitempty"`
 	Context     string            `json:"context,omitempty"` // Task slug, session, etc.
@@ -42,18 +45,18 @@ type Memory struct {
 	AccessCount int               `json:"access_count"` // How many times retrieved
 }
 
-// MemoryStore provides persistent memory storage with vector search
-type MemoryStore struct {
+// Store provides persistent memory storage backed by SQLite with in-memory vector search.
+type Store struct {
 	db       *sql.DB
 	logger   *zap.Logger
-	embedder *Embedder
+	embedder *embedder.Embedder
 	mu       sync.RWMutex
 	// In-memory cache for fast search
 	memories map[string]*Memory
 }
 
-// NewMemoryStore creates a new memory store
-func NewMemoryStore(dbPath string, embedder *Embedder, logger *zap.Logger) (*MemoryStore, error) {
+// NewStore creates a new Store backed by a SQLite database at dbPath.
+func NewStore(dbPath string, embedder *embedder.Embedder, logger *zap.Logger) (*Store, error) {
 	// Create nop logger if not provided
 	if logger == nil {
 		config := zap.NewProductionConfig()
@@ -95,7 +98,7 @@ func NewMemoryStore(dbPath string, embedder *Embedder, logger *zap.Logger) (*Mem
 		return nil, fmt.Errorf("failed to create memory schema: %w", err)
 	}
 
-	store := &MemoryStore{
+	store := &Store{
 		db:       db,
 		logger:   logger,
 		embedder: embedder,
@@ -112,7 +115,7 @@ func NewMemoryStore(dbPath string, embedder *Embedder, logger *zap.Logger) (*Mem
 }
 
 // loadMemoriesToCache loads all memories from SQLite into memory cache
-func (ms *MemoryStore) loadMemoriesToCache() error {
+func (ms *Store) loadMemoriesToCache() error {
 	rows, err := ms.db.Query(`
 		SELECT id, content, type, title, tags, context, importance, metadata,
 		       embedding, created_at, updated_at, accessed_at, access_count
@@ -186,8 +189,8 @@ func (ms *MemoryStore) loadMemoriesToCache() error {
 	return rows.Err()
 }
 
-// Store saves a new memory
-func (ms *MemoryStore) Store(m *Memory) error {
+// Store saves a new memory, generating an ID and embedding if not provided.
+func (ms *Store) Store(m *Memory) error {
 	// Generate ID if not provided
 	if m.ID == "" {
 		m.ID = uuid.New().String()
@@ -216,12 +219,21 @@ func (ms *MemoryStore) Store(m *Memory) error {
 	}
 
 	// Serialize tags and metadata
-	tagsJSON, _ := json.Marshal(m.Tags)
-	metadataJSON, _ := json.Marshal(m.Metadata)
-	embeddingJSON, _ := json.Marshal(m.Embedding)
+	tagsJSON, err := json.Marshal(m.Tags)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tags: %w", err)
+	}
+	metadataJSON, err := json.Marshal(m.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	embeddingJSON, err := json.Marshal(m.Embedding)
+	if err != nil {
+		return fmt.Errorf("failed to marshal embedding: %w", err)
+	}
 
 	// Insert into database
-	_, err := ms.db.Exec(`
+	_, err = ms.db.Exec(`
 		INSERT INTO memories (id, content, type, title, tags, context, importance, metadata,
 		                      embedding, created_at, updated_at, accessed_at, access_count)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -249,8 +261,8 @@ func (ms *MemoryStore) Store(m *Memory) error {
 	return nil
 }
 
-// Recall searches memories by semantic similarity
-func (ms *MemoryStore) Recall(query string, filters MemoryFilters, limit int) ([]*MemorySearchResult, error) {
+// Recall searches memories by semantic similarity, applying filters and importance weighting.
+func (ms *Store) Recall(query string, filters Filters, limit int) ([]*SearchResult, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
@@ -268,7 +280,7 @@ func (ms *MemoryStore) Recall(query string, filters MemoryFilters, limit int) ([
 		}
 	}
 
-	var results []*MemorySearchResult
+	var results []*SearchResult
 
 	for _, m := range ms.memories {
 		// Apply filters
@@ -279,7 +291,7 @@ func (ms *MemoryStore) Recall(query string, filters MemoryFilters, limit int) ([
 		var score float64
 		if len(queryEmbedding) > 0 && len(m.Embedding) > 0 {
 			// Vector similarity search
-			score = cosineSimilarity(queryEmbedding, m.Embedding)
+			score = vectorstore.CosineSimilarity(queryEmbedding, m.Embedding)
 		} else {
 			// Fallback to text matching score
 			score = ms.textMatchScore(query, m)
@@ -288,7 +300,7 @@ func (ms *MemoryStore) Recall(query string, filters MemoryFilters, limit int) ([
 		// Apply importance weight
 		weightedScore := score * (0.5 + m.Importance*0.5)
 
-		results = append(results, &MemorySearchResult{
+		results = append(results, &SearchResult{
 			Memory: m,
 			Score:  weightedScore,
 		})
@@ -316,23 +328,23 @@ func (ms *MemoryStore) Recall(query string, filters MemoryFilters, limit int) ([
 	return results, nil
 }
 
-// MemoryFilters for filtering memories during recall
-type MemoryFilters struct {
-	Type          MemoryType `json:"type,omitempty"`
-	Context       string     `json:"context,omitempty"`
-	Tags          []string   `json:"tags,omitempty"`
-	MinImportance float64    `json:"min_importance,omitempty"`
-	Since         time.Time  `json:"since,omitempty"`
+// Filters specifies optional constraints for memory recall and listing.
+type Filters struct {
+	Type          Type      `json:"type,omitempty"`
+	Context       string    `json:"context,omitempty"`
+	Tags          []string  `json:"tags,omitempty"`
+	MinImportance float64   `json:"min_importance,omitempty"`
+	Since         time.Time `json:"since,omitempty"`
 }
 
-// MemorySearchResult wraps a memory with its search score
-type MemorySearchResult struct {
+// SearchResult wraps a Memory with its relevance score from a search query.
+type SearchResult struct {
 	Memory *Memory `json:"memory"`
 	Score  float64 `json:"score"`
 }
 
 // matchFilters checks if a memory matches the filters
-func (ms *MemoryStore) matchFilters(m *Memory, filters MemoryFilters) bool {
+func (ms *Store) matchFilters(m *Memory, filters Filters) bool {
 	// Type filter
 	if filters.Type != "" && m.Type != filters.Type {
 		return false
@@ -376,7 +388,7 @@ func (ms *MemoryStore) matchFilters(m *Memory, filters MemoryFilters) bool {
 }
 
 // textMatchScore calculates a simple text matching score
-func (ms *MemoryStore) textMatchScore(query string, m *Memory) float64 {
+func (ms *Store) textMatchScore(query string, m *Memory) float64 {
 	queryLower := strings.ToLower(query)
 	contentLower := strings.ToLower(m.Content)
 	titleLower := strings.ToLower(m.Title)
@@ -421,31 +433,36 @@ func (ms *MemoryStore) textMatchScore(query string, m *Memory) float64 {
 
 // updateAccessStats updates access statistics for retrieved memories by ID
 // Uses IDs instead of memory pointers to avoid race conditions with concurrent modifications
-func (ms *MemoryStore) updateAccessStats(ids []string) {
+func (ms *Store) updateAccessStats(ids []string) {
 	if len(ids) == 0 {
 		return
 	}
 
 	now := time.Now()
-	for _, id := range ids {
-		// Update database first (doesn't need lock)
-		ms.db.Exec(`
-			UPDATE memories SET accessed_at = ?, access_count = access_count + 1
-			WHERE id = ?
-		`, now, id)
 
-		// Update cache with lock
-		ms.mu.Lock()
+	// Update cache with a single lock acquisition
+	ms.mu.Lock()
+	for _, id := range ids {
 		if m, exists := ms.memories[id]; exists {
 			m.AccessedAt = now
 			m.AccessCount++
 		}
-		ms.mu.Unlock()
+	}
+	ms.mu.Unlock()
+
+	// Update database (best-effort, log errors)
+	for _, id := range ids {
+		if _, err := ms.db.Exec(`
+			UPDATE memories SET accessed_at = ?, access_count = access_count + 1
+			WHERE id = ?
+		`, now, id); err != nil {
+			ms.logger.Warn("Failed to update access stats", zap.String("id", id), zap.Error(err))
+		}
 	}
 }
 
-// Update modifies an existing memory
-func (ms *MemoryStore) Update(id string, updates MemoryUpdate) error {
+// Update modifies an existing memory identified by id with the provided field updates.
+func (ms *Store) Update(id string, updates Update) error {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
@@ -489,12 +506,21 @@ func (ms *MemoryStore) Update(id string, updates MemoryUpdate) error {
 	m.UpdatedAt = time.Now()
 
 	// Serialize
-	tagsJSON, _ := json.Marshal(m.Tags)
-	metadataJSON, _ := json.Marshal(m.Metadata)
-	embeddingJSON, _ := json.Marshal(m.Embedding)
+	tagsJSON, err := json.Marshal(m.Tags)
+	if err != nil {
+		return fmt.Errorf("failed to marshal tags: %w", err)
+	}
+	metadataJSON, err := json.Marshal(m.Metadata)
+	if err != nil {
+		return fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+	embeddingJSON, err := json.Marshal(m.Embedding)
+	if err != nil {
+		return fmt.Errorf("failed to marshal embedding: %w", err)
+	}
 
 	// Update database
-	_, err := ms.db.Exec(`
+	_, err = ms.db.Exec(`
 		UPDATE memories SET content = ?, title = ?, tags = ?, context = ?,
 		                    importance = ?, metadata = ?, embedding = ?, updated_at = ?
 		WHERE id = ?
@@ -510,8 +536,8 @@ func (ms *MemoryStore) Update(id string, updates MemoryUpdate) error {
 	return nil
 }
 
-// MemoryUpdate contains fields that can be updated
-type MemoryUpdate struct {
+// Update contains optional fields for modifying an existing memory.
+type Update struct {
 	Content    string            `json:"content,omitempty"`
 	Title      string            `json:"title,omitempty"`
 	Tags       []string          `json:"tags,omitempty"`
@@ -520,8 +546,8 @@ type MemoryUpdate struct {
 	Metadata   map[string]string `json:"metadata,omitempty"`
 }
 
-// Delete removes a memory by ID
-func (ms *MemoryStore) Delete(id string) error {
+// Delete removes a memory by ID from both the database and cache.
+func (ms *Store) Delete(id string) error {
 	ms.mu.Lock()
 	defer ms.mu.Unlock()
 
@@ -542,8 +568,8 @@ func (ms *MemoryStore) Delete(id string) error {
 	return nil
 }
 
-// Get retrieves a memory by ID
-func (ms *MemoryStore) Get(id string) (*Memory, error) {
+// Get retrieves a memory by ID from the in-memory cache.
+func (ms *Store) Get(id string) (*Memory, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
@@ -555,8 +581,8 @@ func (ms *MemoryStore) Get(id string) (*Memory, error) {
 	return m, nil
 }
 
-// List returns all memories with optional filtering
-func (ms *MemoryStore) List(filters MemoryFilters, limit int) ([]*Memory, error) {
+// List returns memories matching the given filters, sorted by update time descending.
+func (ms *Store) List(filters Filters, limit int) ([]*Memory, error) {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
@@ -580,27 +606,26 @@ func (ms *MemoryStore) List(filters MemoryFilters, limit int) ([]*Memory, error)
 	return results, nil
 }
 
-// Count returns the total number of memories
-func (ms *MemoryStore) Count() int {
+// Count returns the total number of stored memories.
+func (ms *Store) Count() int {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 	return len(ms.memories)
 }
 
-// CountByType returns memory counts grouped by type
-func (ms *MemoryStore) CountByType() map[MemoryType]int {
+// CountByType returns the number of memories grouped by Type.
+func (ms *Store) CountByType() map[Type]int {
 	ms.mu.RLock()
 	defer ms.mu.RUnlock()
 
-	counts := make(map[MemoryType]int)
+	counts := make(map[Type]int)
 	for _, m := range ms.memories {
 		counts[m.Type]++
 	}
 	return counts
 }
 
-// Close closes the memory store
-func (ms *MemoryStore) Close() error {
+// Close closes the underlying database connection.
+func (ms *Store) Close() error {
 	return ms.db.Close()
 }
-

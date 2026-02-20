@@ -1,4 +1,5 @@
-package main
+// Package logger provides file-based structured logging for MCP diagnostics.
+package logger
 
 import (
 	"os"
@@ -9,26 +10,23 @@ import (
 	"go.uber.org/zap/zapcore"
 )
 
-// FileLogger provides file-based logging for MCP diagnostics
+// FileLogger provides thread-safe file-based logging for MCP diagnostics.
 type FileLogger struct {
-	logger *zap.Logger
+	Logger *zap.Logger
 	mu     sync.Mutex
 }
 
-// NewFileLogger creates a new file logger for diagnostics
-func NewFileLogger(logPath string) (*FileLogger, error) {
-	// Ensure directory exists
+// New creates a new FileLogger that writes JSON-formatted logs to the given path.
+func New(logPath string) (*FileLogger, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
 		return nil, err
 	}
 
-	// Create file writer
 	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return nil, err
 	}
 
-	// Configure encoder
 	encoderConfig := zap.NewProductionEncoderConfig()
 	encoderConfig.TimeKey = "timestamp"
 	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
@@ -37,66 +35,65 @@ func NewFileLogger(logPath string) (*FileLogger, error) {
 	encoderConfig.CallerKey = "caller"
 	encoderConfig.StacktraceKey = "stacktrace"
 
-	// Create core with file output
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(encoderConfig),
 		zapcore.AddSync(file),
-		zapcore.InfoLevel, // Log info and above
+		zapcore.InfoLevel,
 	)
 
-	logger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
+	zapLogger := zap.New(core, zap.AddCaller(), zap.AddStacktrace(zapcore.ErrorLevel))
 
 	return &FileLogger{
-		logger: logger,
+		Logger: zapLogger,
 	}, nil
 }
 
-// Info logs an info message
+// Info logs a message at info level.
 func (fl *FileLogger) Info(msg string, fields ...zap.Field) {
-	if fl == nil || fl.logger == nil {
+	if fl == nil || fl.Logger == nil {
 		return
 	}
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	fl.logger.Info(msg, fields...)
+	fl.Logger.Info(msg, fields...)
 }
 
-// Warn logs a warning message
+// Warn logs a message at warn level.
 func (fl *FileLogger) Warn(msg string, fields ...zap.Field) {
-	if fl == nil || fl.logger == nil {
+	if fl == nil || fl.Logger == nil {
 		return
 	}
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	fl.logger.Warn(msg, fields...)
+	fl.Logger.Warn(msg, fields...)
 }
 
-// Error logs an error message
+// Error logs a message at error level.
 func (fl *FileLogger) Error(msg string, fields ...zap.Field) {
-	if fl == nil || fl.logger == nil {
+	if fl == nil || fl.Logger == nil {
 		return
 	}
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	fl.logger.Error(msg, fields...)
+	fl.Logger.Error(msg, fields...)
 }
 
-// Debug logs a debug message
+// Debug logs a message at debug level.
 func (fl *FileLogger) Debug(msg string, fields ...zap.Field) {
-	if fl == nil || fl.logger == nil {
+	if fl == nil || fl.Logger == nil {
 		return
 	}
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	fl.logger.Debug(msg, fields...)
+	fl.Logger.Debug(msg, fields...)
 }
 
-// Sync flushes any buffered log entries
+// Sync flushes any buffered log entries to disk.
 func (fl *FileLogger) Sync() error {
-	if fl == nil || fl.logger == nil {
+	if fl == nil || fl.Logger == nil {
 		return nil
 	}
 	fl.mu.Lock()
 	defer fl.mu.Unlock()
-	return fl.logger.Sync()
+	return fl.Logger.Sync()
 }

@@ -16,7 +16,7 @@ An MCP (Model Context Protocol) server that gives AI agents persistent memory wi
 ### Option 1: go install
 
 ```bash
-go install github.com/ipiton/agent-memory-mcp@latest
+go install github.com/ipiton/agent-memory-mcp/cmd/agent-memory-mcp@latest
 ```
 
 The binary will be in `$GOPATH/bin/agent-memory-mcp`.
@@ -26,7 +26,7 @@ The binary will be in `$GOPATH/bin/agent-memory-mcp`.
 ```bash
 git clone https://github.com/ipiton/agent-memory-mcp.git
 cd agent-memory-mcp
-go build -o bin/agent-memory-mcp .
+go build -o bin/agent-memory-mcp ./cmd/agent-memory-mcp
 ```
 
 ### Option 3: Download binary
@@ -101,6 +101,8 @@ agent-memory-mcp
 MCP_HTTP_MODE=http MCP_HTTP_PORT=18080 agent-memory-mcp
 ```
 
+> The server listens on plain HTTP. For TLS, use a reverse proxy (nginx, Caddy, Traefik) or cloud load balancer in front of it.
+
 ## MCP client configuration
 
 ### Claude Desktop
@@ -161,6 +163,31 @@ Add to `.claude/settings.json`:
 }
 ```
 
+### HTTP mode (Docker, remote server, shared instance)
+
+Start the server in HTTP mode:
+
+```bash
+# Standalone
+MCP_HTTP_MODE=http MCP_HTTP_PORT=18080 agent-memory-mcp
+
+# Or with Docker
+docker compose up -d
+```
+
+Then configure your MCP client to connect via HTTP. For example, with Claude Desktop using [mcp-remote](https://github.com/geelen/mcp-remote):
+
+```json
+{
+  "mcpServers": {
+    "memory": {
+      "command": "npx",
+      "args": ["mcp-remote", "http://localhost:18080/rpc"]
+    }
+  }
+}
+```
+
 ## Tools reference
 
 ### Memory tools
@@ -203,7 +230,7 @@ All configuration is via environment variables. See [`.env.example`](.env.exampl
 | `MCP_MEMORY_ENABLED` | `true` | Enable memory tools |
 | `MCP_RAG_ENABLED` | `true` | Enable RAG/search tools |
 | `MCP_HTTP_MODE` | `stdio` | Transport: `stdio` or `http` |
-| `MCP_HTTP_PORT` | `8080` | HTTP port (when in HTTP mode) |
+| `MCP_HTTP_PORT` | `18080` | HTTP port (when in HTTP mode) |
 | `JINA_API_KEY` | - | Jina AI API key for embeddings |
 | `OPENAI_API_KEY` | - | OpenAI API key (or compatible: Together, Mistral) |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible base URL |

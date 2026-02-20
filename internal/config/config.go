@@ -1,4 +1,5 @@
-package main
+// Package config provides configuration loading for the MCP server.
+package config
 
 import (
 	"flag"
@@ -9,12 +10,12 @@ import (
 )
 
 const (
-	defaultMaxFileBytes    = int64(2 * 1024 * 1024)
-	defaultMaxSearchResult = 200
-	defaultMaxDepth        = 3
+	DefaultMaxFileBytes    = int64(2 * 1024 * 1024)
+	DefaultMaxSearchResult = 200
+	DefaultMaxDepth        = 3
 )
 
-// Config holds all MCP server configuration
+// Config holds all MCP server configuration.
 type Config struct {
 	// Core settings
 	RootPath         string   // Repository root path
@@ -28,10 +29,10 @@ type Config struct {
 	StatsSampleRate  float64
 
 	// Data storage paths
-	DataPath       string // Base path for all data (default: {RootPath}/data)
-	RAGIndexPath   string // Path to RAG vector index (default: {DataPath}/rag-index)
-	MemoryDBPath   string // Path to memory database (default: {DataPath}/memory-store/memories.db)
-	LogPath        string // Path to diagnostic log file (default: {RootPath}/logs/mcp-diagnostics.log)
+	DataPath     string // Base path for all data (default: {RootPath}/data)
+	RAGIndexPath string // Path to RAG vector index (default: {DataPath}/rag-index)
+	MemoryDBPath string // Path to memory database (default: {DataPath}/memory-store/memories.db)
+	LogPath      string // Path to diagnostic log file (default: {RootPath}/logs/mcp-diagnostics.log)
 
 	// RAG configuration
 	RAGEnabled    bool
@@ -41,64 +42,65 @@ type Config struct {
 	MemoryEnabled bool
 
 	// Document indexing configuration
-	IndexDirs      []string // Directories to index (relative to RootPath)
-	ChangelogPath  string   // Path to changelog file (relative to RootPath)
-	ChunkSize      int      // Characters per chunk (default: 2000)
-	ChunkOverlap   int      // Overlap between chunks (default: 200)
+	IndexDirs     []string // Directories to index (relative to RootPath)
+	ChangelogPath string   // Path to changelog file (relative to RootPath)
+	ChunkSize     int      // Characters per chunk (default: 2000)
+	ChunkOverlap  int      // Overlap between chunks (default: 200)
 
 	// Embeddings configuration
-	JinaAPIKey     string // Jina AI API key
-	OpenAIAPIKey   string // OpenAI API key (or compatible: Together, Mistral, etc.)
-	OpenAIBaseURL  string // OpenAI-compatible base URL (default: https://api.openai.com/v1)
-	OpenAIModel    string // OpenAI embedding model (default: text-embedding-3-small)
+	JinaAPIKey         string // Jina AI API key
+	OpenAIAPIKey       string // OpenAI API key (or compatible: Together, Mistral, etc.)
+	OpenAIBaseURL      string // OpenAI-compatible base URL (default: https://api.openai.com/v1)
+	OpenAIModel        string // OpenAI embedding model (default: text-embedding-3-small)
 	OllamaBaseURL      string // Ollama base URL (default: http://localhost:11434)
 	EmbeddingDimension int    // Embedding vector dimension (default: 1024)
 
 	// HTTP server configuration
 	HTTPMode string // "stdio" or "http" (default: "stdio")
-	HTTPPort int    // HTTP server port (default: 8080)
+	HTTPPort int    // HTTP server port (default: 18080)
 }
 
-func LoadConfig() (Config, error) {
+// Load reads configuration from environment variables and command-line flags.
+func Load() (Config, error) {
 	// Core settings
-	root := envOrDefault("MCP_ROOT", "")
-	allow := envOrDefault("MCP_ALLOW_DIRS", "")
-	outputMode := normalizeOutputMode(envOrDefault("MCP_STDIO_MODE", ""))
-	statsEnabled := envBool("MCP_STATS_ENABLED", false)
-	statsPath := envOrDefault("MCP_STATS_PATH", "")
-	statsSample := envFloat("MCP_STATS_SAMPLE_RATE", 1)
-	maxFileBytes := envInt64("MCP_MAX_FILE_BYTES", defaultMaxFileBytes)
-	maxSearch := envInt("MCP_MAX_SEARCH_RESULTS", defaultMaxSearchResult)
-	maxDepth := envInt("MCP_MAX_DEPTH", defaultMaxDepth)
+	root := EnvOrDefault("MCP_ROOT", "")
+	allow := EnvOrDefault("MCP_ALLOW_DIRS", "")
+	outputMode := normalizeOutputMode(EnvOrDefault("MCP_STDIO_MODE", ""))
+	statsEnabled := EnvBool("MCP_STATS_ENABLED", false)
+	statsPath := EnvOrDefault("MCP_STATS_PATH", "")
+	statsSample := EnvFloat("MCP_STATS_SAMPLE_RATE", 1)
+	maxFileBytes := EnvInt64("MCP_MAX_FILE_BYTES", DefaultMaxFileBytes)
+	maxSearch := EnvInt("MCP_MAX_SEARCH_RESULTS", DefaultMaxSearchResult)
+	maxDepth := EnvInt("MCP_MAX_DEPTH", DefaultMaxDepth)
 
 	// RAG & Memory settings
-	ragEnabled := envBool("MCP_RAG_ENABLED", true)
-	ragMaxResults := envInt("MCP_RAG_MAX_RESULTS", 10)
-	memoryEnabled := envBool("MCP_MEMORY_ENABLED", true)
+	ragEnabled := EnvBool("MCP_RAG_ENABLED", true)
+	ragMaxResults := EnvInt("MCP_RAG_MAX_RESULTS", 10)
+	memoryEnabled := EnvBool("MCP_MEMORY_ENABLED", true)
 
 	// Data paths
-	dataPath := envOrDefault("MCP_DATA_PATH", "")
-	ragIndexPath := envOrDefault("MCP_RAG_INDEX_PATH", "")
-	memoryDBPath := envOrDefault("MCP_MEMORY_DB_PATH", "")
-	logPath := envOrDefault("MCP_LOG_PATH", "")
+	dataPath := EnvOrDefault("MCP_DATA_PATH", "")
+	ragIndexPath := EnvOrDefault("MCP_RAG_INDEX_PATH", "")
+	memoryDBPath := EnvOrDefault("MCP_MEMORY_DB_PATH", "")
+	logPath := EnvOrDefault("MCP_LOG_PATH", "")
 
 	// Indexing settings
-	indexDirs := envOrDefault("MCP_INDEX_DIRS", "docs")
-	changelogPath := envOrDefault("MCP_CHANGELOG_PATH", "CHANGELOG.md")
-	chunkSize := envInt("MCP_CHUNK_SIZE", 2000)
-	chunkOverlap := envInt("MCP_CHUNK_OVERLAP", 200)
+	indexDirs := EnvOrDefault("MCP_INDEX_DIRS", "docs")
+	changelogPath := EnvOrDefault("MCP_CHANGELOG_PATH", "CHANGELOG.md")
+	chunkSize := EnvInt("MCP_CHUNK_SIZE", 2000)
+	chunkOverlap := EnvInt("MCP_CHUNK_OVERLAP", 200)
 
 	// Embeddings
-	jinaAPIKey := envOrDefault("JINA_API_KEY", "")
-	openaiAPIKey := envOrDefault("OPENAI_API_KEY", "")
-	openaiBaseURL := envOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1")
-	openaiModel := envOrDefault("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-	ollamaBaseURL := envOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")
-	embeddingDimension := envInt("MCP_EMBEDDING_DIMENSION", 1024)
+	jinaAPIKey := EnvOrDefault("JINA_API_KEY", "")
+	openaiAPIKey := EnvOrDefault("OPENAI_API_KEY", "")
+	openaiBaseURL := EnvOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1")
+	openaiModel := EnvOrDefault("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
+	ollamaBaseURL := EnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")
+	embeddingDimension := EnvInt("MCP_EMBEDDING_DIMENSION", 1024)
 
 	// HTTP settings
-	httpMode := envOrDefault("MCP_HTTP_MODE", "stdio")
-	httpPort := envInt("MCP_HTTP_PORT", 8080)
+	httpMode := EnvOrDefault("MCP_HTTP_MODE", "stdio")
+	httpPort := EnvInt("MCP_HTTP_PORT", 18080)
 
 	flag.StringVar(&root, "root", root, "Repository root (defaults to current dir)")
 	flag.StringVar(&allow, "allow", allow, "Comma-separated allowlist of repo-relative paths")
@@ -189,10 +191,10 @@ func LoadConfig() (Config, error) {
 		ChunkOverlap:  chunkOverlap,
 
 		// Embeddings
-		JinaAPIKey:    jinaAPIKey,
-		OpenAIAPIKey:  openaiAPIKey,
-		OpenAIBaseURL: openaiBaseURL,
-		OpenAIModel:   openaiModel,
+		JinaAPIKey:         jinaAPIKey,
+		OpenAIAPIKey:       openaiAPIKey,
+		OpenAIBaseURL:      openaiBaseURL,
+		OpenAIModel:        openaiModel,
 		OllamaBaseURL:      ollamaBaseURL,
 		EmbeddingDimension: embeddingDimension,
 
@@ -219,7 +221,8 @@ func splitAllowlist(raw string) []string {
 	return out
 }
 
-func envOrDefault(key, fallback string) string {
+// EnvOrDefault returns the value of an environment variable, or fallback if empty.
+func EnvOrDefault(key, fallback string) string {
 	val := strings.TrimSpace(os.Getenv(key))
 	if val == "" {
 		return fallback
@@ -227,7 +230,8 @@ func envOrDefault(key, fallback string) string {
 	return val
 }
 
-func envInt(key string, fallback int) int {
+// EnvInt returns an environment variable parsed as int, or fallback on error.
+func EnvInt(key string, fallback int) int {
 	val := strings.TrimSpace(os.Getenv(key))
 	if val == "" {
 		return fallback
@@ -239,7 +243,8 @@ func envInt(key string, fallback int) int {
 	return parsed
 }
 
-func envInt64(key string, fallback int64) int64 {
+// EnvInt64 returns an environment variable parsed as int64, or fallback on error.
+func EnvInt64(key string, fallback int64) int64 {
 	val := strings.TrimSpace(os.Getenv(key))
 	if val == "" {
 		return fallback
@@ -263,7 +268,8 @@ func normalizeOutputMode(value string) string {
 	}
 }
 
-func envBool(key string, fallback bool) bool {
+// EnvBool returns an environment variable parsed as bool, or fallback on error.
+func EnvBool(key string, fallback bool) bool {
 	val := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
 	if val == "" {
 		return fallback
@@ -278,7 +284,8 @@ func envBool(key string, fallback bool) bool {
 	}
 }
 
-func envFloat(key string, fallback float64) float64 {
+// EnvFloat returns an environment variable parsed as float64, or fallback on error.
+func EnvFloat(key string, fallback float64) float64 {
 	val := strings.TrimSpace(os.Getenv(key))
 	if val == "" {
 		return fallback
@@ -288,4 +295,12 @@ func envFloat(key string, fallback float64) float64 {
 		return fallback
 	}
 	return parsed
+}
+
+// BoolToString converts a bool to "true" or "false" string for logging.
+func BoolToString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }

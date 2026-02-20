@@ -1,4 +1,4 @@
-package main
+package search
 
 import (
 	"fmt"
@@ -6,7 +6,8 @@ import (
 	"os"
 )
 
-func readTextFile(path string, offset int64, maxBytes int64, size int64) (string, bool, error) {
+// ReadTextFile reads a text file with optional offset and size limit, returning content and truncation status.
+func ReadTextFile(path string, offset int64, maxBytes int64, size int64) (string, bool, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", false, err
@@ -35,7 +36,7 @@ func readTextFile(path string, offset int64, maxBytes int64, size int64) (string
 	if err != nil {
 		return "", truncated, err
 	}
-	if isBinary(data) {
+	if IsBinary(data) {
 		return "", truncated, fmt.Errorf("binary files are not supported")
 	}
 

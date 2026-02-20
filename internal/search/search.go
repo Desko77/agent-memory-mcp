@@ -1,4 +1,5 @@
-package main
+// Package search provides text search across repository files.
+package search
 
 import (
 	"bufio"
@@ -8,9 +9,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ipiton/agent-memory-mcp/internal/paths"
 )
 
-type SearchMatch struct {
+// Match represents a single search hit with file path, line number, and text.
+type Match struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Text string `json:"text"`
@@ -33,7 +37,8 @@ var skipDirs = map[string]struct{}{
 	"playwright-report": {},
 }
 
-func shouldSkipDir(name string, isDir bool) bool {
+// ShouldSkipDir reports whether the directory should be excluded from search.
+func ShouldSkipDir(name string, isDir bool) bool {
 	if !isDir {
 		return false
 	}
@@ -41,7 +46,8 @@ func shouldSkipDir(name string, isDir bool) bool {
 	return ok
 }
 
-func searchRepo(guard *PathGuard, query, relPath string, maxResults int, maxBytes int64) ([]SearchMatch, error) {
+// Repo searches for a query string across allowed repository files.
+func Repo(guard *paths.Guard, query, relPath string, maxResults int, maxBytes int64) ([]Match, error) {
 	roots := []string{}
 	if relPath != "" {
 		abs, err := guard.Resolve(relPath)
@@ -59,7 +65,7 @@ func searchRepo(guard *PathGuard, query, relPath string, maxResults int, maxByte
 		}
 	}
 
-	matches := make([]SearchMatch, 0, minInt(maxResults, 256))
+	matches := make([]Match, 0, minInt(maxResults, 256))
 	for _, root := range roots {
 		if len(matches) >= maxResults {
 			break
@@ -73,7 +79,7 @@ func searchRepo(guard *PathGuard, query, relPath string, maxResults int, maxByte
 				if err != nil {
 					return nil
 				}
-				if path != root && shouldSkipDir(d.Name(), d.IsDir()) {
+				if path != root && ShouldSkipDir(d.Name(), d.IsDir()) {
 					if d.IsDir() {
 						return filepath.SkipDir
 					}
@@ -85,7 +91,7 @@ func searchRepo(guard *PathGuard, query, relPath string, maxResults int, maxByte
 				if len(matches) >= maxResults {
 					return io.EOF
 				}
-				if err := scanFile(path, guard, query, maxBytes, maxResults, &matches); err != nil {
+				if err := ScanFile(path, guard, query, maxBytes, maxResults, &matches); err != nil {
 					if err == io.EOF {
 						return io.EOF
 					}
@@ -97,7 +103,7 @@ func searchRepo(guard *PathGuard, query, relPath string, maxResults int, maxByte
 			}
 			continue
 		}
-		if err := scanFile(root, guard, query, maxBytes, maxResults, &matches); err != nil {
+		if err := ScanFile(root, guard, query, maxBytes, maxResults, &matches); err != nil {
 			if err == io.EOF {
 				break
 			}
@@ -107,7 +113,8 @@ func searchRepo(guard *PathGuard, query, relPath string, maxResults int, maxByte
 	return matches, nil
 }
 
-func scanFile(path string, guard *PathGuard, query string, maxBytes int64, maxResults int, matches *[]SearchMatch) error {
+// ScanFile searches a single file for lines matching the query string.
+func ScanFile(path string, guard *paths.Guard, query string, maxBytes int64, maxResults int, matches *[]Match) error {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil
@@ -122,8 +129,11 @@ func scanFile(path string, guard *PathGuard, query string, maxBytes int64, maxRe
 	defer file.Close()
 
 	sample := make([]byte, 512)
-	n, _ := file.Read(sample)
-	if isBinary(sample[:n]) {
+	n, err := file.Read(sample)
+	if err != nil && err != io.EOF {
+		return nil
+	}
+	if IsBinary(sample[:n]) {
 		return nil
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -141,7 +151,7 @@ func scanFile(path string, guard *PathGuard, query string, maxBytes int64, maxRe
 		lineNum++
 		text := scanner.Text()
 		if strings.Contains(text, query) {
-			*matches = append(*matches, SearchMatch{
+			*matches = append(*matches, Match{
 				Path: rel,
 				Line: lineNum,
 				Text: text,
@@ -154,7 +164,8 @@ func scanFile(path string, guard *PathGuard, query string, maxBytes int64, maxRe
 	return nil
 }
 
-func isBinary(data []byte) bool {
+// IsBinary reports whether data contains null bytes, indicating a binary file.
+func IsBinary(data []byte) bool {
 	if len(data) == 0 {
 		return false
 	}
@@ -164,7 +175,8 @@ func isBinary(data []byte) bool {
 	return false
 }
 
-func formatMatches(matches []SearchMatch) string {
+// FormatMatches formats search results as "path:line text" lines.
+func FormatMatches(matches []Match) string {
 	if len(matches) == 0 {
 		return "(no matches)"
 	}

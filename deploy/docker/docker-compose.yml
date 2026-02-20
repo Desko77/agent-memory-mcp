@@ -2,7 +2,7 @@ services:
   agent-memory-mcp:
     build: .
     ports:
-      - "18080:8080"
+      - "18080:18080"
     volumes:
       - memory-data:/data
       - ./docs:/project/docs:ro  # Mount your docs for RAG indexing

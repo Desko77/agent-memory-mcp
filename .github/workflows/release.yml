@@ -37,7 +37,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           mkdir -p dist
-          go build -o dist/agent-memory-mcp-${{ matrix.goos }}-${{ matrix.goarch }} .
+          go build -o dist/agent-memory-mcp-${{ matrix.goos }}-${{ matrix.goarch }} ./cmd/agent-memory-mcp
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

@@ -1,4 +1,5 @@
-package main
+// Package stats provides sampled usage statistics logging in JSONL format.
+package stats
 
 import (
 	"encoding/json"
@@ -8,13 +9,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ipiton/agent-memory-mcp/internal/config"
 )
 
 const maxErrorLength = 200
 
-type StatsEvent struct {
+// Event represents a single MCP usage event for statistics tracking.
+type Event struct {
 	Timestamp   string `json:"timestamp"`
-	Event       string `json:"event"`
+	EventName   string `json:"event"`
 	Tool        string `json:"tool,omitempty"`
 	Method      string `json:"method,omitempty"`
 	Path        string `json:"path,omitempty"`
@@ -27,7 +31,8 @@ type StatsEvent struct {
 	Error       string `json:"error,omitempty"`
 }
 
-type StatsLogger struct {
+// Logger writes sampled usage events to a JSONL file.
+type Logger struct {
 	enabled    bool
 	path       string
 	sampleRate float64
@@ -35,7 +40,8 @@ type StatsLogger struct {
 	rng        *rand.Rand
 }
 
-func NewStatsLogger(cfg Config) *StatsLogger {
+// NewLogger creates a stats Logger from the given config, or returns nil if disabled.
+func NewLogger(cfg config.Config) *Logger {
 	if !cfg.StatsEnabled || cfg.StatsPath == "" {
 		return nil
 	}
@@ -49,7 +55,7 @@ func NewStatsLogger(cfg Config) *StatsLogger {
 	if dir != "." {
 		_ = os.MkdirAll(dir, 0o755)
 	}
-	return &StatsLogger{
+	return &Logger{
 		enabled:    true,
 		path:       cfg.StatsPath,
 		sampleRate: cfg.StatsSampleRate,
@@ -57,7 +63,8 @@ func NewStatsLogger(cfg Config) *StatsLogger {
 	}
 }
 
-func (s *StatsLogger) Log(event StatsEvent) {
+// Log writes an event to the stats file, subject to sampling rate.
+func (s *Logger) Log(event Event) {
 	if s == nil || !s.enabled {
 		return
 	}

@@ -1,4 +1,4 @@
-package main
+package server
 
 import (
 	"bytes"
@@ -8,17 +8,20 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ipiton/agent-memory-mcp/internal/memory"
+	"github.com/ipiton/agent-memory-mcp/internal/rag"
+	"github.com/ipiton/agent-memory-mcp/internal/stats"
 	"go.uber.org/zap"
 )
 
-type Tool struct {
+type tool struct {
 	Name        string         `json:"name"`
 	Description string         `json:"description"`
 	InputSchema map[string]any `json:"inputSchema"`
 }
 
-func (s *MCPServer) handleToolsList(_ json.RawMessage) (any, *RPCError) {
-	tools := []Tool{
+func (s *MCPServer) handleToolsList(_ json.RawMessage) (any, *rpcError) {
+	tools := []tool{
 		{
 			Name:        "repo_list",
 			Description: "List files and folders under an allowlisted path",
@@ -161,7 +164,7 @@ func (s *MCPServer) handleToolsList(_ json.RawMessage) (any, *RPCError) {
 			Name:        "index_documents",
 			Description: "Re-index documents for RAG search",
 			InputSchema: map[string]any{
-				"type": "object",
+				"type":       "object",
 				"properties": map[string]any{},
 			},
 		},
@@ -327,97 +330,96 @@ func (s *MCPServer) handleToolsList(_ json.RawMessage) (any, *RPCError) {
 	return map[string]any{"tools": tools}, nil
 }
 
-func (s *MCPServer) handleToolsCall(params json.RawMessage) (any, *RPCError) {
+func (s *MCPServer) handleToolsCall(params json.RawMessage) (any, *rpcError) {
 	start := time.Now()
 	var req struct {
 		Name      string         `json:"name"`
 		Arguments map[string]any `json:"arguments"`
 	}
 	if err := json.Unmarshal(params, &req); err != nil {
-		rpcErr := &RPCError{Code: -32602, Message: "invalid params", Data: err.Error()}
-		s.logToolEvent("", nil, start, rpcErr)
-		return nil, rpcErr
+		rErr := &rpcError{Code: -32602, Message: "invalid params", Data: err.Error()}
+		s.logToolEvent("", nil, start, rErr)
+		return nil, rErr
 	}
 	if req.Name == "" {
-		rpcErr := &RPCError{Code: -32602, Message: "tool name is required"}
-		s.logToolEvent("", req.Arguments, start, rpcErr)
-		return nil, rpcErr
+		rErr := &rpcError{Code: -32602, Message: "tool name is required"}
+		s.logToolEvent("", req.Arguments, start, rErr)
+		return nil, rErr
 	}
 
 	switch req.Name {
 	case "repo_list":
-		result, rpcErr := s.callRepoList(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callRepoList(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "repo_read":
-		result, rpcErr := s.callRepoRead(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callRepoRead(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "repo_search":
-		result, rpcErr := s.callRepoSearch(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callRepoSearch(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "semantic_search":
-		result, rpcErr := s.callSemanticSearch(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callSemanticSearch(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "find_similar_tasks":
-		result, rpcErr := s.callFindSimilarTasks(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callFindSimilarTasks(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "get_relevant_docs":
-		result, rpcErr := s.callGetRelevantDocs(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callGetRelevantDocs(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "index_documents":
-		result, rpcErr := s.callIndexDocuments(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
-	// Memory tools
+		result, rErr := s.callIndexDocuments(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "store_memory":
-		result, rpcErr := s.callStoreMemory(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callStoreMemory(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "recall_memory":
-		result, rpcErr := s.callRecallMemory(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callRecallMemory(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "update_memory":
-		result, rpcErr := s.callUpdateMemory(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callUpdateMemory(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "delete_memory":
-		result, rpcErr := s.callDeleteMemory(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callDeleteMemory(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "list_memories":
-		result, rpcErr := s.callListMemories(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callListMemories(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	case "memory_stats":
-		result, rpcErr := s.callMemoryStats(req.Arguments)
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return result, rpcErr
+		result, rErr := s.callMemoryStats(req.Arguments)
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return result, rErr
 	default:
-		rpcErr := &RPCError{Code: -32601, Message: fmt.Sprintf("unknown tool: %s", req.Name)}
-		s.logToolEvent(req.Name, req.Arguments, start, rpcErr)
-		return nil, rpcErr
+		rErr := &rpcError{Code: -32601, Message: fmt.Sprintf("unknown tool: %s", req.Name)}
+		s.logToolEvent(req.Name, req.Arguments, start, rErr)
+		return nil, rErr
 	}
 }
 
-func (s *MCPServer) logToolEvent(name string, args map[string]any, start time.Time, rpcErr *RPCError) {
+func (s *MCPServer) logToolEvent(name string, args map[string]any, start time.Time, rErr *rpcError) {
 	if s.stats == nil {
 		return
 	}
-	event := StatsEvent{
-		Event:      "tool_call",
+	event := stats.Event{
+		EventName:  "tool_call",
 		Method:     "tools/call",
 		Tool:       name,
 		DurationMs: time.Since(start).Milliseconds(),
-		Success:    rpcErr == nil,
+		Success:    rErr == nil,
 	}
-	if rpcErr != nil {
-		event.Error = rpcErr.Message
+	if rErr != nil {
+		event.Error = rErr.Message
 	}
 	if path, ok := getString(args, "path"); ok {
 		event.Path = path
@@ -496,29 +498,33 @@ func getInt64(args map[string]any, key string) (int64, bool) {
 
 // RAG tool implementations
 
-func (s *MCPServer) callSemanticSearch(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callSemanticSearch(args map[string]any) (any, *rpcError) {
 	if s.ragEngine == nil {
-		// Always log this - it's critical for debugging
 		if s.fileLogger != nil {
 			s.fileLogger.Warn("semantic_search called but RAG engine is not available",
 				zap.Bool("rag_enabled_in_config", s.config.RAGEnabled),
 				zap.String("rag_index_path", s.config.RAGIndexPath),
 			)
 		} else {
-			// Fallback to stderr if file logger is not available
 			fmt.Fprintf(os.Stderr, "WARN: semantic_search called but RAG engine is nil (RAG enabled: %v)\n", s.config.RAGEnabled)
 		}
-		return nil, &RPCError{Code: -32000, Message: "RAG engine not available"}
+		return nil, &rpcError{Code: -32000, Message: "RAG engine not available"}
 	}
 
 	query, ok := getString(args, "query")
 	if !ok || query == "" {
-		return nil, &RPCError{Code: -32602, Message: "query parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "query parameter is required"}
+	}
+	if len(query) > 10000 {
+		return nil, &rpcError{Code: -32602, Message: "query too long (max 10000 characters)"}
 	}
 
 	limit := 10
 	if l, ok := getInt(args, "limit"); ok && l > 0 {
 		limit = l
+	}
+	if limit > 50 {
+		limit = 50
 	}
 
 	docType, _ := getString(args, "doc_type")
@@ -526,13 +532,13 @@ func (s *MCPServer) callSemanticSearch(args map[string]any) (any, *RPCError) {
 
 	results, err := s.ragEngine.Search(query, limit, docType, category)
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: fmt.Sprintf("search failed: %v", err)}
+		return nil, &rpcError{Code: -32000, Message: fmt.Sprintf("search failed: %v", err)}
 	}
 
 	return toolResultText(s.formatSearchResults(results)), nil
 }
 
-func (s *MCPServer) callFindSimilarTasks(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callFindSimilarTasks(args map[string]any) (any, *rpcError) {
 	if s.ragEngine == nil {
 		if s.fileLogger != nil {
 			s.fileLogger.Warn("find_similar_tasks called but RAG engine is not available",
@@ -541,28 +547,34 @@ func (s *MCPServer) callFindSimilarTasks(args map[string]any) (any, *RPCError) {
 		} else {
 			fmt.Fprintf(os.Stderr, "WARN: find_similar_tasks called but RAG engine is nil\n")
 		}
-		return nil, &RPCError{Code: -32000, Message: "RAG engine not available"}
+		return nil, &rpcError{Code: -32000, Message: "RAG engine not available"}
 	}
 
 	description, ok := getString(args, "description")
 	if !ok || description == "" {
-		return nil, &RPCError{Code: -32602, Message: "description parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "description parameter is required"}
+	}
+	if len(description) > 10000 {
+		return nil, &rpcError{Code: -32602, Message: "description too long (max 10000 characters)"}
 	}
 
 	limit := 5
 	if l, ok := getInt(args, "limit"); ok && l > 0 {
 		limit = l
 	}
+	if limit > 20 {
+		limit = 20
+	}
 
 	results, err := s.ragEngine.Search(description, limit, "tasks", "")
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "task search failed", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "task search failed", Data: err.Error()}
 	}
 
 	return toolResultText(s.formatTaskResults(results)), nil
 }
 
-func (s *MCPServer) callGetRelevantDocs(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callGetRelevantDocs(args map[string]any) (any, *rpcError) {
 	if s.ragEngine == nil {
 		if s.fileLogger != nil {
 			s.fileLogger.Warn("get_relevant_docs called but RAG engine is not available",
@@ -571,52 +583,52 @@ func (s *MCPServer) callGetRelevantDocs(args map[string]any) (any, *RPCError) {
 		} else {
 			fmt.Fprintf(os.Stderr, "WARN: get_relevant_docs called but RAG engine is nil\n")
 		}
-		return nil, &RPCError{Code: -32000, Message: "RAG engine not available"}
+		return nil, &rpcError{Code: -32000, Message: "RAG engine not available"}
 	}
 
 	topic, ok := getString(args, "topic")
 	if !ok || topic == "" {
-		return nil, &RPCError{Code: -32602, Message: "topic parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "topic parameter is required"}
+	}
+	if len(topic) > 10000 {
+		return nil, &rpcError{Code: -32602, Message: "topic too long (max 10000 characters)"}
 	}
 
 	limit := 10
 	if l, ok := getInt(args, "limit"); ok && l > 0 {
 		limit = l
 	}
+	if limit > 30 {
+		limit = 30
+	}
 
 	results, err := s.ragEngine.Search(topic, limit, "docs", "")
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "documentation search failed", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "documentation search failed", Data: err.Error()}
 	}
 
 	return toolResultText(s.formatDocResults(results)), nil
 }
 
-func (s *MCPServer) callIndexDocuments(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callIndexDocuments(_ map[string]any) (any, *rpcError) {
 	if s.ragEngine == nil {
 		if s.fileLogger != nil {
 			s.fileLogger.Warn("index_documents called but RAG engine is not available")
 		}
-		return nil, &RPCError{Code: -32000, Message: "RAG engine not available"}
+		return nil, &rpcError{Code: -32000, Message: "RAG engine not available"}
 	}
 
-	// Get document count before indexing
-	docs, err := s.ragEngine.docService.CollectDocuments()
+	err := s.ragEngine.IndexDocuments()
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "failed to collect documents", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "document indexing failed", Data: err.Error()}
 	}
 
-	err = s.ragEngine.IndexDocuments()
-	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "document indexing failed", Data: err.Error()}
-	}
-
-	return toolResultText(fmt.Sprintf("Documents indexed successfully. Processed %d documents.", len(docs))), nil
+	return toolResultText("Documents indexed successfully."), nil
 }
 
-// Result formatting functions
+// Result formatting
 
-func (s *MCPServer) formatSearchResults(results *RAGSearchResponse) string {
+func (s *MCPServer) formatSearchResults(results *rag.SearchResponse) string {
 	if len(results.Results) == 0 {
 		return fmt.Sprintf("No results found for '%s'.", results.Query)
 	}
@@ -639,7 +651,7 @@ func (s *MCPServer) formatSearchResults(results *RAGSearchResponse) string {
 	return buf.String()
 }
 
-func (s *MCPServer) formatTaskResults(results *RAGSearchResponse) string {
+func (s *MCPServer) formatTaskResults(results *rag.SearchResponse) string {
 	if len(results.Results) == 0 {
 		return "No similar tasks found."
 	}
@@ -659,7 +671,7 @@ func (s *MCPServer) formatTaskResults(results *RAGSearchResponse) string {
 	return buf.String()
 }
 
-func (s *MCPServer) formatDocResults(results *RAGSearchResponse) string {
+func (s *MCPServer) formatDocResults(results *rag.SearchResponse) string {
 	if len(results.Results) == 0 {
 		return "No relevant documentation found."
 	}
@@ -680,84 +692,92 @@ func (s *MCPServer) formatDocResults(results *RAGSearchResponse) string {
 
 // Memory tool implementations
 
-func (s *MCPServer) callStoreMemory(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callStoreMemory(args map[string]any) (any, *rpcError) {
 	if s.memoryStore == nil {
-		return nil, &RPCError{Code: -32000, Message: "Memory store not available"}
+		return nil, &rpcError{Code: -32000, Message: "Memory store not available"}
 	}
 
 	content, ok := getString(args, "content")
 	if !ok || content == "" {
-		return nil, &RPCError{Code: -32602, Message: "content parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "content parameter is required"}
+	}
+	if len(content) > 100000 {
+		return nil, &rpcError{Code: -32602, Message: "content too long (max 100000 characters)"}
 	}
 
-	memory := &Memory{
+	mem := &memory.Memory{
 		Content:    content,
-		Type:       MemoryTypeSemantic, // Default
+		Type:       memory.TypeSemantic,
 		Importance: 0.5,
 	}
 
-	// Parse optional parameters
 	if title, ok := getString(args, "title"); ok {
-		memory.Title = title
+		mem.Title = title
 	}
 
 	if memType, ok := getString(args, "type"); ok {
 		switch memType {
 		case "episodic":
-			memory.Type = MemoryTypeEpisodic
+			mem.Type = memory.TypeEpisodic
 		case "semantic":
-			memory.Type = MemoryTypeSemantic
+			mem.Type = memory.TypeSemantic
 		case "procedural":
-			memory.Type = MemoryTypeProcedural
+			mem.Type = memory.TypeProcedural
 		case "working":
-			memory.Type = MemoryTypeWorking
+			mem.Type = memory.TypeWorking
 		}
 	}
 
 	if context, ok := getString(args, "context"); ok {
-		memory.Context = context
+		mem.Context = context
 	}
 
 	if tags, ok := args["tags"].([]interface{}); ok {
 		for _, t := range tags {
 			if tagStr, ok := t.(string); ok {
-				memory.Tags = append(memory.Tags, tagStr)
+				mem.Tags = append(mem.Tags, tagStr)
 			}
 		}
 	}
 
 	if importance, ok := args["importance"].(float64); ok && importance >= 0 && importance <= 1 {
-		memory.Importance = importance
+		mem.Importance = importance
 	}
 
-	err := s.memoryStore.Store(memory)
+	err := s.memoryStore.Store(mem)
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "failed to store memory", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "failed to store memory", Data: err.Error()}
 	}
 
 	return toolResultText(fmt.Sprintf("Memory stored:\n- ID: %s\n- Type: %s\n- Title: %s",
-		memory.ID, memory.Type, memory.Title)), nil
+		mem.ID, mem.Type, mem.Title)), nil
 }
 
-func (s *MCPServer) callRecallMemory(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callRecallMemory(args map[string]any) (any, *rpcError) {
 	if s.memoryStore == nil {
-		return nil, &RPCError{Code: -32000, Message: "Memory store not available"}
+		return nil, &rpcError{Code: -32000, Message: "Memory store not available"}
 	}
 
 	query, ok := getString(args, "query")
 	if !ok || query == "" {
-		return nil, &RPCError{Code: -32602, Message: "query parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "query parameter is required"}
+	}
+	if len(query) > 10000 {
+		return nil, &rpcError{Code: -32602, Message: "query too long (max 10000 characters)"}
 	}
 
 	limit := 10
 	if l, ok := getInt(args, "limit"); ok && l > 0 {
 		limit = l
 	}
+	if limit > 50 {
+		limit = 50
+	}
 
-	filters := MemoryFilters{}
+	filters := memory.Filters{}
 
 	if memType, ok := getString(args, "type"); ok && memType != "" && memType != "all" {
-		filters.Type = MemoryType(memType)
+		filters.Type = memory.Type(memType)
 	}
 
 	if context, ok := getString(args, "context"); ok {
@@ -774,23 +794,23 @@ func (s *MCPServer) callRecallMemory(args map[string]any) (any, *RPCError) {
 
 	results, err := s.memoryStore.Recall(query, filters, limit)
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "memory recall failed", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "memory recall failed", Data: err.Error()}
 	}
 
 	return toolResultText(s.formatMemoryResults(query, results)), nil
 }
 
-func (s *MCPServer) callUpdateMemory(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callUpdateMemory(args map[string]any) (any, *rpcError) {
 	if s.memoryStore == nil {
-		return nil, &RPCError{Code: -32000, Message: "Memory store not available"}
+		return nil, &rpcError{Code: -32000, Message: "Memory store not available"}
 	}
 
 	id, ok := getString(args, "id")
 	if !ok || id == "" {
-		return nil, &RPCError{Code: -32602, Message: "id parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "id parameter is required"}
 	}
 
-	updates := MemoryUpdate{}
+	updates := memory.Update{}
 
 	if content, ok := getString(args, "content"); ok {
 		updates.Content = content
@@ -811,44 +831,47 @@ func (s *MCPServer) callUpdateMemory(args map[string]any) (any, *RPCError) {
 
 	err := s.memoryStore.Update(id, updates)
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "failed to update memory", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "failed to update memory", Data: err.Error()}
 	}
 
 	return toolResultText(fmt.Sprintf("Memory updated (ID: %s)", id)), nil
 }
 
-func (s *MCPServer) callDeleteMemory(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callDeleteMemory(args map[string]any) (any, *rpcError) {
 	if s.memoryStore == nil {
-		return nil, &RPCError{Code: -32000, Message: "Memory store not available"}
+		return nil, &rpcError{Code: -32000, Message: "Memory store not available"}
 	}
 
 	id, ok := getString(args, "id")
 	if !ok || id == "" {
-		return nil, &RPCError{Code: -32602, Message: "id parameter is required"}
+		return nil, &rpcError{Code: -32602, Message: "id parameter is required"}
 	}
 
 	err := s.memoryStore.Delete(id)
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "failed to delete memory", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "failed to delete memory", Data: err.Error()}
 	}
 
 	return toolResultText(fmt.Sprintf("Memory deleted (ID: %s)", id)), nil
 }
 
-func (s *MCPServer) callListMemories(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callListMemories(args map[string]any) (any, *rpcError) {
 	if s.memoryStore == nil {
-		return nil, &RPCError{Code: -32000, Message: "Memory store not available"}
+		return nil, &rpcError{Code: -32000, Message: "Memory store not available"}
 	}
 
 	limit := 20
 	if l, ok := getInt(args, "limit"); ok && l > 0 {
 		limit = l
 	}
+	if limit > 100 {
+		limit = 100
+	}
 
-	filters := MemoryFilters{}
+	filters := memory.Filters{}
 
 	if memType, ok := getString(args, "type"); ok && memType != "" && memType != "all" {
-		filters.Type = MemoryType(memType)
+		filters.Type = memory.Type(memType)
 	}
 
 	if context, ok := getString(args, "context"); ok {
@@ -857,15 +880,15 @@ func (s *MCPServer) callListMemories(args map[string]any) (any, *RPCError) {
 
 	memories, err := s.memoryStore.List(filters, limit)
 	if err != nil {
-		return nil, &RPCError{Code: -32000, Message: "failed to list memories", Data: err.Error()}
+		return nil, &rpcError{Code: -32000, Message: "failed to list memories", Data: err.Error()}
 	}
 
 	return toolResultText(s.formatMemoryList(memories)), nil
 }
 
-func (s *MCPServer) callMemoryStats(args map[string]any) (any, *RPCError) {
+func (s *MCPServer) callMemoryStats(_ map[string]any) (any, *rpcError) {
 	if s.memoryStore == nil {
-		return nil, &RPCError{Code: -32000, Message: "Memory store not available"}
+		return nil, &rpcError{Code: -32000, Message: "Memory store not available"}
 	}
 
 	total := s.memoryStore.Count()
@@ -876,11 +899,11 @@ func (s *MCPServer) callMemoryStats(args map[string]any) (any, *RPCError) {
 	buf.WriteString(fmt.Sprintf("Total memories: **%d**\n\n", total))
 	buf.WriteString("By type:\n")
 
-	typeNames := map[MemoryType]string{
-		MemoryTypeEpisodic:   "Episodic (events)",
-		MemoryTypeSemantic:   "Semantic (facts)",
-		MemoryTypeProcedural: "Procedural (patterns)",
-		MemoryTypeWorking:    "Working (current context)",
+	typeNames := map[memory.Type]string{
+		memory.TypeEpisodic:   "Episodic (events)",
+		memory.TypeSemantic:   "Semantic (facts)",
+		memory.TypeProcedural: "Procedural (patterns)",
+		memory.TypeWorking:    "Working (current context)",
 	}
 
 	for memType, name := range typeNames {
@@ -893,7 +916,7 @@ func (s *MCPServer) callMemoryStats(args map[string]any) (any, *RPCError) {
 
 // Memory result formatting
 
-func (s *MCPServer) formatMemoryResults(query string, results []*MemorySearchResult) string {
+func (s *MCPServer) formatMemoryResults(query string, results []*memory.SearchResult) string {
 	if len(results) == 0 {
 		return fmt.Sprintf("No memories found for '%s'.", query)
 	}
@@ -925,7 +948,7 @@ func (s *MCPServer) formatMemoryResults(query string, results []*MemorySearchRes
 	return buf.String()
 }
 
-func (s *MCPServer) formatMemoryList(memories []*Memory) string {
+func (s *MCPServer) formatMemoryList(memories []*memory.Memory) string {
 	if len(memories) == 0 {
 		return "No memories found."
 	}
@@ -953,11 +976,10 @@ func (s *MCPServer) formatMemoryList(memories []*Memory) string {
 	return buf.String()
 }
 
-func getMemoryTitle(m *Memory) string {
+func getMemoryTitle(m *memory.Memory) string {
 	if m.Title != "" {
 		return m.Title
 	}
-	// Generate title from first line of content
 	firstLine := m.Content
 	if idx := findNewline(firstLine); idx > 0 {
 		firstLine = firstLine[:idx]
@@ -977,15 +999,15 @@ func findNewline(s string) int {
 	return -1
 }
 
-func formatMemoryType(t MemoryType) string {
+func formatMemoryType(t memory.Type) string {
 	switch t {
-	case MemoryTypeEpisodic:
+	case memory.TypeEpisodic:
 		return "Episodic"
-	case MemoryTypeSemantic:
+	case memory.TypeSemantic:
 		return "Semantic"
-	case MemoryTypeProcedural:
+	case memory.TypeProcedural:
 		return "Procedural"
-	case MemoryTypeWorking:
+	case memory.TypeWorking:
 		return "Working"
 	default:
 		return string(t)
