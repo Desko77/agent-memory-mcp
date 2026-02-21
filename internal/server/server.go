@@ -346,7 +346,7 @@ func (s *MCPServer) handleInitialize(_ json.RawMessage) (any, *rpcError) {
 		},
 		"serverInfo": map[string]any{
 			"name":    "agent-memory-mcp",
-			"version": "0.1.0",
+			"version": "0.2.0",
 		},
 	}, nil
 }

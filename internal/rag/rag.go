@@ -318,7 +318,7 @@ func (re *Engine) IndexDocuments() error {
 			chunkCountsByFile[doc.Path]++
 		}
 
-		batchSize := 10
+		batchSize := 50
 		totalBatches := (len(toAdd) + batchSize - 1) / batchSize
 
 		for batchNum := 0; batchNum < totalBatches; batchNum++ {
@@ -338,11 +338,21 @@ func (re *Engine) IndexDocuments() error {
 				return fmt.Errorf("failed to index: %w", err)
 			}
 
-			updatedFiles := make(map[string]bool)
+			// Collect files that have ANY failed chunks — don't mark them as indexed
+			failedFiles := make(map[string]bool)
+			for _, failedID := range result.FailedIDs {
+				for _, doc := range batch {
+					if doc.ID == failedID {
+						failedFiles[doc.Path] = true
+						break
+					}
+				}
+			}
 
+			updatedFiles := make(map[string]bool)
 			for _, successID := range result.SuccessIDs {
 				for _, doc := range batch {
-					if doc.ID == successID && !updatedFiles[doc.Path] {
+					if doc.ID == successID && !updatedFiles[doc.Path] && !failedFiles[doc.Path] {
 						fileHash := doc.FileHash
 						if fileHash == "" {
 							fileHash = calculateFileHash(doc.Content)
@@ -366,12 +376,17 @@ func (re *Engine) IndexDocuments() error {
 				}
 			}
 
+			if len(failedFiles) > 0 {
+				re.logger.Warn("Files with failed chunks will be re-indexed next cycle",
+					zap.Int("failed_files", len(failedFiles)))
+			}
+
 			re.logger.Info("Batch indexed",
 				zap.Int("success", len(result.SuccessIDs)),
 				zap.Int("failed", len(result.FailedIDs)))
 
 			if batchNum < totalBatches-1 {
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(50 * time.Millisecond)
 			}
 		}
 	}
@@ -603,7 +618,10 @@ func (ds *documentService) collectDocuments() ([]document, error) {
 	var allDocs []document
 
 	for _, dir := range ds.config.IndexDirs {
-		fullPath := filepath.Join(ds.config.RepoRoot, dir)
+		fullPath := dir
+		if !filepath.IsAbs(dir) {
+			fullPath = filepath.Join(ds.config.RepoRoot, dir)
+		}
 
 		info, err := os.Stat(fullPath)
 		if err != nil {
@@ -899,17 +917,30 @@ func (vs *vectorService) indexDocuments(docs []document) (*indexResult, error) {
 		Errors:     make([]error, 0),
 	}
 
+	// Collect texts for batch embedding
+	texts := make([]string, len(docs))
+	for i, doc := range docs {
+		texts[i] = doc.Content
+	}
+
+	// Batch embed all texts at once
+	embeddings, err := vs.config.Embedder.BatchEmbed(texts)
+	if err != nil {
+		// Batch failed entirely — mark all as failed
+		for _, doc := range docs {
+			result.FailedIDs = append(result.FailedIDs, doc.ID)
+		}
+		result.Errors = append(result.Errors, err)
+		vs.logger.Error("Batch embedding failed", zap.Error(err), zap.Int("count", len(docs)))
+		return result, nil
+	}
+
 	var chunks []vectorstore.Chunk
 	for i, doc := range docs {
-		if i > 0 {
-			time.Sleep(200 * time.Millisecond)
-		}
-
-		embedding, err := vs.config.Embedder.Embed(doc.Content)
-		if err != nil {
-			vs.logger.Warn("Failed to embed document", zap.String("id", doc.ID), zap.Error(err))
+		if i >= len(embeddings) || embeddings[i] == nil {
+			vs.logger.Warn("Nil embedding for document", zap.String("id", doc.ID))
 			result.FailedIDs = append(result.FailedIDs, doc.ID)
-			result.Errors = append(result.Errors, err)
+			result.Errors = append(result.Errors, fmt.Errorf("nil embedding for doc %s", doc.ID))
 			continue
 		}
 
@@ -924,7 +955,7 @@ func (vs *vectorService) indexDocuments(docs []document) (*indexResult, error) {
 			TaskSlug:     doc.TaskSlug,
 			TaskPhase:    doc.TaskPhase,
 			LastModified: doc.LastModified,
-			Embedding:    embedding,
+			Embedding:    embeddings[i],
 		})
 
 		result.SuccessIDs = append(result.SuccessIDs, doc.ID)

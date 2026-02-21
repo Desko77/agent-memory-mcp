@@ -606,6 +606,23 @@ func (ms *Store) List(filters Filters, limit int) ([]*Memory, error) {
 	return results, nil
 }
 
+// ExportAll returns all memories sorted by CreatedAt ascending.
+func (ms *Store) ExportAll() ([]*Memory, error) {
+	ms.mu.RLock()
+	defer ms.mu.RUnlock()
+
+	result := make([]*Memory, 0, len(ms.memories))
+	for _, m := range ms.memories {
+		result = append(result, m)
+	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].CreatedAt.Before(result[j].CreatedAt)
+	})
+
+	return result, nil
+}
+
 // Count returns the total number of stored memories.
 func (ms *Store) Count() int {
 	ms.mu.RLock()

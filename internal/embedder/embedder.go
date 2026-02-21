@@ -52,7 +52,7 @@ func New(config Config, logger *zap.Logger) (*Embedder, error) {
 		config.OllamaBaseURL = "http://localhost:11434"
 	}
 	if config.Timeout == 0 {
-		config.Timeout = 30 * time.Second
+		config.Timeout = 120 * time.Second
 	}
 	if config.MaxRetries == 0 {
 		config.MaxRetries = 2
@@ -193,22 +193,306 @@ func (e *Embedder) EmbedWithTask(text string, task string) ([]float32, error) {
 	return nil, fmt.Errorf("all embedding providers failed: configure at least one of JINA_API_KEY, OPENAI_API_KEY, or OLLAMA_BASE_URL")
 }
 
-// BatchEmbed generates vector embeddings for multiple texts sequentially.
+// BatchEmbed generates vector embeddings for multiple texts using native batch APIs.
 func (e *Embedder) BatchEmbed(texts []string) ([][]float32, error) {
-	embeddings := make([][]float32, len(texts))
+	return e.BatchEmbedWithTask(texts, "retrieval.passage")
+}
 
-	for i, text := range texts {
-		embedding, err := e.Embed(text)
-		if err != nil {
-			return nil, fmt.Errorf("failed to embed text at index %d: %w", i, err)
-		}
-		embeddings[i] = embedding
+// BatchEmbedWithTask generates batch embeddings with the specified task type.
+// Uses native batch APIs for each provider (Jina, OpenAI, Ollama).
+func (e *Embedder) BatchEmbedWithTask(texts []string, task string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
 	}
 
+	e.jinaDisabledMu.Lock()
+	jinaDisabled := e.jinaDisabled
+	if jinaDisabled && !e.jinaDisabledUntil.IsZero() && time.Now().After(e.jinaDisabledUntil) {
+		e.jinaDisabled = false
+		e.jinaDisabledUntil = time.Time{}
+		e.jinaErrorCount = 0
+		jinaDisabled = false
+		e.jinaDisabledMu.Unlock()
+		e.logger.Info("Retrying Jina AI after timeout period")
+	} else {
+		e.jinaDisabledMu.Unlock()
+	}
+
+	// 1. Try Jina AI batch
+	if !jinaDisabled && e.config.JinaToken != "" {
+		embeddings, err := e.batchEmbedJinaWithTask(texts, task)
+		if err == nil {
+			return embeddings, nil
+		}
+		e.logger.Warn("Jina batch embed failed", zap.Error(err))
+	}
+
+	// 2. Try OpenAI batch
+	if e.config.OpenAIToken != "" {
+		embeddings, err := e.batchEmbedOpenAI(texts)
+		if err == nil {
+			return embeddings, nil
+		}
+		e.logger.Warn("OpenAI batch embed failed", zap.Error(err))
+	}
+
+	// 3. Try Ollama batch
+	if e.config.OllamaBaseURL != "" {
+		embeddings, err := e.batchEmbedOllamaModel(texts, "bge-m3:latest")
+		if err == nil {
+			return embeddings, nil
+		}
+		e.logger.Warn("Ollama bge-m3 batch failed", zap.Error(err))
+
+		embeddings, err = e.batchEmbedOllamaModel(texts, "mxbai-embed-large:latest")
+		if err == nil {
+			return embeddings, nil
+		}
+		e.logger.Warn("Ollama mxbai batch failed", zap.Error(err))
+	}
+
+	return nil, fmt.Errorf("all batch embedding providers failed: configure at least one of JINA_API_KEY, OPENAI_API_KEY, or OLLAMA_BASE_URL")
+}
+
+// batchEmbedOllamaModel generates batch embeddings using Ollama /api/embed endpoint.
+// Splits into sub-batches to avoid context length and timeout issues.
+// Retries on empty response (model loading).
+func (e *Embedder) batchEmbedOllamaModel(texts []string, model string) ([][]float32, error) {
+	const subBatchSize = 10
+
+	allEmbeddings := make([][]float32, len(texts))
+
+	for start := 0; start < len(texts); start += subBatchSize {
+		end := start + subBatchSize
+		if end > len(texts) {
+			end = len(texts)
+		}
+		subBatch := texts[start:end]
+
+		embeddings, err := e.ollamaEmbedSubBatch(subBatch, model)
+		if err != nil {
+			return nil, err
+		}
+
+		copy(allEmbeddings[start:end], embeddings)
+	}
+
+	return allEmbeddings, nil
+}
+
+// ollamaEmbedSubBatch sends a single batch request to Ollama /api/embed with retry.
+func (e *Embedder) ollamaEmbedSubBatch(texts []string, model string) ([][]float32, error) {
+	url := e.config.OllamaBaseURL + "/api/embed"
+
+	payload := map[string]interface{}{
+		"model": model,
+		"input": texts,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	for attempt := 0; attempt <= e.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt*2) * time.Second
+			e.logger.Info("Retrying Ollama batch embed, model may be loading",
+				zap.String("model", model),
+				zap.Int("attempt", attempt+1),
+				zap.Duration("delay", delay))
+			time.Sleep(delay)
+		}
+
+		resp, err := e.client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			if attempt < e.config.MaxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("Ollama %s batch request failed: %w", model, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("Ollama %s batch returned status %d: %s", model, resp.StatusCode, sanitizeErrorBody(body))
+		}
+
+		var ollamaResp struct {
+			Embeddings [][]float64 `json:"embeddings"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+			resp.Body.Close()
+			if attempt < e.config.MaxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("failed to decode Ollama %s batch response: %w", model, err)
+		}
+		resp.Body.Close()
+
+		if len(ollamaResp.Embeddings) == 0 || len(ollamaResp.Embeddings[0]) == 0 {
+			if attempt < e.config.MaxRetries {
+				e.logger.Warn("Ollama batch returned empty embeddings, model may be loading",
+					zap.String("model", model))
+				continue
+			}
+			return nil, fmt.Errorf("Ollama %s batch returned empty embeddings after retries", model)
+		}
+
+		if len(ollamaResp.Embeddings) != len(texts) {
+			return nil, fmt.Errorf("Ollama %s batch: got %d embeddings for %d texts", model, len(ollamaResp.Embeddings), len(texts))
+		}
+
+		embeddings := make([][]float32, len(ollamaResp.Embeddings))
+		for i, emb := range ollamaResp.Embeddings {
+			if len(emb) != e.Dimension {
+				return nil, fmt.Errorf("Ollama %s dimension mismatch at index %d: got %d, expected %d", model, i, len(emb), e.Dimension)
+			}
+			embeddings[i] = make([]float32, len(emb))
+			for j, v := range emb {
+				embeddings[i][j] = float32(v)
+			}
+		}
+		return embeddings, nil
+	}
+
+	return nil, fmt.Errorf("Ollama %s batch: all retries exhausted", model)
+}
+
+// batchEmbedOpenAI generates batch embeddings using OpenAI-compatible /v1/embeddings endpoint.
+func (e *Embedder) batchEmbedOpenAI(texts []string) ([][]float32, error) {
+	model := e.config.OpenAIModel
+	if model == "" {
+		model = "text-embedding-3-small"
+	}
+	baseURL := e.config.OpenAIBaseURL
+	if baseURL == "" {
+		baseURL = "https://api.openai.com/v1"
+	}
+	url := strings.TrimRight(baseURL, "/") + "/embeddings"
+
+	payload := map[string]interface{}{
+		"input":      texts,
+		"model":      model,
+		"dimensions": e.Dimension,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+e.config.OpenAIToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OpenAI batch request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("OpenAI batch returned status %d: %s", resp.StatusCode, sanitizeErrorBody(body))
+	}
+
+	var openaiResp struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&openaiResp); err != nil {
+		return nil, fmt.Errorf("failed to decode OpenAI batch response: %w", err)
+	}
+
+	if len(openaiResp.Data) != len(texts) {
+		return nil, fmt.Errorf("OpenAI batch: got %d embeddings for %d texts", len(openaiResp.Data), len(texts))
+	}
+
+	embeddings := make([][]float32, len(texts))
+	for _, item := range openaiResp.Data {
+		if item.Index >= len(texts) {
+			return nil, fmt.Errorf("OpenAI batch: invalid index %d", item.Index)
+		}
+		emb := make([]float32, len(item.Embedding))
+		for j, v := range item.Embedding {
+			emb[j] = float32(v)
+		}
+		embeddings[item.Index] = emb
+	}
+	return embeddings, nil
+}
+
+// batchEmbedJinaWithTask generates batch embeddings using Jina AI API.
+func (e *Embedder) batchEmbedJinaWithTask(texts []string, task string) ([][]float32, error) {
+	url := "https://api.jina.ai/v1/embeddings"
+
+	payload := map[string]interface{}{
+		"input":           texts,
+		"model":           "jina-embeddings-v3",
+		"encoding_format": "float",
+		"dimensions":      e.Dimension,
+		"task":            task,
+	}
+
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+e.config.JinaToken)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := e.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("Jina batch request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Jina batch returned status %d: %s", resp.StatusCode, sanitizeErrorBody(body))
+	}
+
+	var jinaResp struct {
+		Data []struct {
+			Embedding []float64 `json:"embedding"`
+			Index     int       `json:"index"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&jinaResp); err != nil {
+		return nil, fmt.Errorf("failed to decode Jina batch response: %w", err)
+	}
+
+	if len(jinaResp.Data) != len(texts) {
+		return nil, fmt.Errorf("Jina batch: got %d embeddings for %d texts", len(jinaResp.Data), len(texts))
+	}
+
+	embeddings := make([][]float32, len(texts))
+	for _, item := range jinaResp.Data {
+		if item.Index >= len(texts) {
+			return nil, fmt.Errorf("Jina batch: invalid index %d", item.Index)
+		}
+		emb := make([]float32, len(item.Embedding))
+		for j, v := range item.Embedding {
+			emb[j] = float32(v)
+		}
+		embeddings[item.Index] = emb
+	}
 	return embeddings, nil
 }
 
 // embedOllamaModel generates embeddings using specified Ollama model.
+// Retries on empty response (model loading).
 func (e *Embedder) embedOllamaModel(text, model string) ([]float32, error) {
 	url := e.config.OllamaBaseURL + "/api/embeddings"
 
@@ -222,32 +506,62 @@ func (e *Embedder) embedOllamaModel(text, model string) ([]float32, error) {
 		return nil, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
-	resp, err := e.client.Post(url, "application/json", bytes.NewBuffer(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("Ollama %s request failed: %w", model, err)
-	}
-	defer resp.Body.Close()
+	for attempt := 0; attempt <= e.config.MaxRetries; attempt++ {
+		if attempt > 0 {
+			delay := time.Duration(attempt*2) * time.Second
+			e.logger.Info("Retrying Ollama embed, model may be loading",
+				zap.String("model", model),
+				zap.Int("attempt", attempt+1),
+				zap.Duration("delay", delay))
+			time.Sleep(delay)
+		}
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("Ollama %s returned status %d: %s", model, resp.StatusCode, sanitizeErrorBody(body))
+		resp, err := e.client.Post(url, "application/json", bytes.NewBuffer(jsonData))
+		if err != nil {
+			if attempt < e.config.MaxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("Ollama %s request failed: %w", model, err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if attempt < e.config.MaxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("Ollama %s returned status %d: %s", model, resp.StatusCode, sanitizeErrorBody(body))
+		}
+
+		var ollamaResp struct {
+			Embedding []float64 `json:"embedding"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
+			resp.Body.Close()
+			if attempt < e.config.MaxRetries {
+				continue
+			}
+			return nil, fmt.Errorf("failed to decode Ollama %s response: %w", model, err)
+		}
+		resp.Body.Close()
+
+		if len(ollamaResp.Embedding) == 0 {
+			if attempt < e.config.MaxRetries {
+				e.logger.Warn("Ollama returned empty embedding, model may be loading",
+					zap.String("model", model))
+				continue
+			}
+			return nil, fmt.Errorf("Ollama %s returned empty embedding after retries", model)
+		}
+
+		embedding := make([]float32, len(ollamaResp.Embedding))
+		for i, v := range ollamaResp.Embedding {
+			embedding[i] = float32(v)
+		}
+		return embedding, nil
 	}
 
-	var ollamaResp struct {
-		Embedding []float64 `json:"embedding"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&ollamaResp); err != nil {
-		return nil, fmt.Errorf("failed to decode Ollama %s response: %w", model, err)
-	}
-
-	// Convert to float32
-	embedding := make([]float32, len(ollamaResp.Embedding))
-	for i, v := range ollamaResp.Embedding {
-		embedding[i] = float32(v)
-	}
-
-	return embedding, nil
+	return nil, fmt.Errorf("Ollama %s: all retries exhausted", model)
 }
 
 // embedOpenAI generates embeddings using OpenAI-compatible API.

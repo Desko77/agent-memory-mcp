@@ -1,6 +1,7 @@
 # Binaries
 bin/
-agent-memory-mcp
+dist/
+/agent-memory-mcp
 *.exe
 
 # Environment (contains API keys)

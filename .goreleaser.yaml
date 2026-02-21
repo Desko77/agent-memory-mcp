@@ -1,0 +1,41 @@
+version: 2
+
+project_name: agent-memory-mcp
+
+builds:
+  - main: ./cmd/agent-memory-mcp
+    binary: agent-memory-mcp
+    ldflags:
+      - -s -w
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: "{{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: agent-memory-mcp
+    binaries:
+      - agent-memory-mcp
+    repository:
+      owner: ipiton
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/ipiton/agent-memory-mcp"
+    description: "MCP server with persistent agent memory and RAG semantic search"

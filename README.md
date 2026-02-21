@@ -103,6 +103,35 @@ MCP_HTTP_MODE=http MCP_HTTP_PORT=18080 agent-memory-mcp
 
 > The server listens on plain HTTP. For TLS, use a reverse proxy (nginx, Caddy, Traefik) or cloud load balancer in front of it.
 
+### CLI mode
+
+The binary also works as a standalone CLI -- no MCP client needed:
+
+```bash
+# Memory operations
+agent-memory-mcp store -content "Project uses chi router" -type procedural -tags "go,chi"
+agent-memory-mcp recall "router middleware"
+agent-memory-mcp list -type procedural
+agent-memory-mcp delete <memory-id>
+
+# RAG search
+agent-memory-mcp search "authentication flow"
+agent-memory-mcp index
+
+# Utilities
+agent-memory-mcp stats
+agent-memory-mcp export > backup.json
+agent-memory-mcp import backup.json
+
+# JSON output for scripting
+agent-memory-mcp recall "test" -json
+agent-memory-mcp stats -json
+```
+
+Run `agent-memory-mcp <command> -help` for details on any command.
+
+When no command is given (or flags start with `-`), the binary starts the MCP server as before -- full backward compatibility.
+
 ## MCP client configuration
 
 ### Claude Desktop
@@ -188,7 +217,22 @@ Then configure your MCP client to connect via HTTP. For example, with Claude Des
 }
 ```
 
-## Tools reference
+## CLI commands
+
+| Command | Description |
+|---------|-------------|
+| `serve` | Start MCP server (stdio/http) -- default when no command given |
+| `store` | Store a memory (`-content`, `-title`, `-type`, `-tags`, `-context`, `-importance`, `-stdin`) |
+| `recall` | Semantic search in memories (positional query, `-type`, `-tags`, `-limit`, `-json`) |
+| `list` | List memories (`-type`, `-context`, `-limit`, `-json`) |
+| `delete` | Delete a memory by ID (positional) |
+| `search` | RAG semantic search (positional query, `-doc-type`, `-category`, `-limit`, `-json`) |
+| `index` | Re-index documents for RAG |
+| `stats` | Show memory statistics (`-json`) |
+| `export` | Export all memories to JSON (`-o` file, default stdout) |
+| `import` | Import memories from JSON (positional file or stdin) |
+
+## MCP tools reference
 
 ### Memory tools
 

@@ -60,60 +60,75 @@ type Config struct {
 	HTTPPort int    // HTTP server port (default: 18080)
 }
 
-// Load reads configuration from environment variables and command-line flags.
-func Load() (Config, error) {
-	// Core settings
-	root := EnvOrDefault("MCP_ROOT", "")
-	allow := EnvOrDefault("MCP_ALLOW_DIRS", "")
-	outputMode := normalizeOutputMode(EnvOrDefault("MCP_STDIO_MODE", ""))
-	statsEnabled := EnvBool("MCP_STATS_ENABLED", false)
-	statsPath := EnvOrDefault("MCP_STATS_PATH", "")
-	statsSample := EnvFloat("MCP_STATS_SAMPLE_RATE", 1)
-	maxFileBytes := EnvInt64("MCP_MAX_FILE_BYTES", DefaultMaxFileBytes)
-	maxSearch := EnvInt("MCP_MAX_SEARCH_RESULTS", DefaultMaxSearchResult)
-	maxDepth := EnvInt("MCP_MAX_DEPTH", DefaultMaxDepth)
+// envValues holds raw values read from environment variables before path resolution.
+type envValues struct {
+	root               string
+	allow              string
+	outputMode         string
+	statsEnabled       bool
+	statsPath          string
+	statsSample        float64
+	maxFileBytes       int64
+	maxSearch          int
+	maxDepth           int
+	ragEnabled         bool
+	ragMaxResults      int
+	memoryEnabled      bool
+	dataPath           string
+	ragIndexPath       string
+	memoryDBPath       string
+	logPath            string
+	indexDirs          string
+	changelogPath      string
+	chunkSize          int
+	chunkOverlap       int
+	jinaAPIKey         string
+	openaiAPIKey       string
+	openaiBaseURL      string
+	openaiModel        string
+	ollamaBaseURL      string
+	embeddingDimension int
+	httpMode           string
+	httpPort           int
+}
 
-	// RAG & Memory settings
-	ragEnabled := EnvBool("MCP_RAG_ENABLED", true)
-	ragMaxResults := EnvInt("MCP_RAG_MAX_RESULTS", 10)
-	memoryEnabled := EnvBool("MCP_MEMORY_ENABLED", true)
+// loadEnv reads all configuration from environment variables.
+func loadEnv() envValues {
+	return envValues{
+		root:               EnvOrDefault("MCP_ROOT", ""),
+		allow:              EnvOrDefault("MCP_ALLOW_DIRS", ""),
+		outputMode:         normalizeOutputMode(EnvOrDefault("MCP_STDIO_MODE", "")),
+		statsEnabled:       EnvBool("MCP_STATS_ENABLED", false),
+		statsPath:          EnvOrDefault("MCP_STATS_PATH", ""),
+		statsSample:        EnvFloat("MCP_STATS_SAMPLE_RATE", 1),
+		maxFileBytes:       EnvInt64("MCP_MAX_FILE_BYTES", DefaultMaxFileBytes),
+		maxSearch:          EnvInt("MCP_MAX_SEARCH_RESULTS", DefaultMaxSearchResult),
+		maxDepth:           EnvInt("MCP_MAX_DEPTH", DefaultMaxDepth),
+		ragEnabled:         EnvBool("MCP_RAG_ENABLED", true),
+		ragMaxResults:      EnvInt("MCP_RAG_MAX_RESULTS", 10),
+		memoryEnabled:      EnvBool("MCP_MEMORY_ENABLED", true),
+		dataPath:           EnvOrDefault("MCP_DATA_PATH", ""),
+		ragIndexPath:       EnvOrDefault("MCP_RAG_INDEX_PATH", ""),
+		memoryDBPath:       EnvOrDefault("MCP_MEMORY_DB_PATH", ""),
+		logPath:            EnvOrDefault("MCP_LOG_PATH", ""),
+		indexDirs:          EnvOrDefault("MCP_INDEX_DIRS", "docs"),
+		changelogPath:      EnvOrDefault("MCP_CHANGELOG_PATH", "CHANGELOG.md"),
+		chunkSize:          EnvInt("MCP_CHUNK_SIZE", 2000),
+		chunkOverlap:       EnvInt("MCP_CHUNK_OVERLAP", 200),
+		jinaAPIKey:         EnvOrDefault("JINA_API_KEY", ""),
+		openaiAPIKey:       EnvOrDefault("OPENAI_API_KEY", ""),
+		openaiBaseURL:      EnvOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1"),
+		openaiModel:        EnvOrDefault("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+		ollamaBaseURL:      EnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434"),
+		embeddingDimension: EnvInt("MCP_EMBEDDING_DIMENSION", 1024),
+		httpMode:           EnvOrDefault("MCP_HTTP_MODE", "stdio"),
+		httpPort:           EnvInt("MCP_HTTP_PORT", 18080),
+	}
+}
 
-	// Data paths
-	dataPath := EnvOrDefault("MCP_DATA_PATH", "")
-	ragIndexPath := EnvOrDefault("MCP_RAG_INDEX_PATH", "")
-	memoryDBPath := EnvOrDefault("MCP_MEMORY_DB_PATH", "")
-	logPath := EnvOrDefault("MCP_LOG_PATH", "")
-
-	// Indexing settings
-	indexDirs := EnvOrDefault("MCP_INDEX_DIRS", "docs")
-	changelogPath := EnvOrDefault("MCP_CHANGELOG_PATH", "CHANGELOG.md")
-	chunkSize := EnvInt("MCP_CHUNK_SIZE", 2000)
-	chunkOverlap := EnvInt("MCP_CHUNK_OVERLAP", 200)
-
-	// Embeddings
-	jinaAPIKey := EnvOrDefault("JINA_API_KEY", "")
-	openaiAPIKey := EnvOrDefault("OPENAI_API_KEY", "")
-	openaiBaseURL := EnvOrDefault("OPENAI_BASE_URL", "https://api.openai.com/v1")
-	openaiModel := EnvOrDefault("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")
-	ollamaBaseURL := EnvOrDefault("OLLAMA_BASE_URL", "http://localhost:11434")
-	embeddingDimension := EnvInt("MCP_EMBEDDING_DIMENSION", 1024)
-
-	// HTTP settings
-	httpMode := EnvOrDefault("MCP_HTTP_MODE", "stdio")
-	httpPort := EnvInt("MCP_HTTP_PORT", 18080)
-
-	flag.StringVar(&root, "root", root, "Repository root (defaults to current dir)")
-	flag.StringVar(&allow, "allow", allow, "Comma-separated allowlist of repo-relative paths")
-	flag.StringVar(&outputMode, "stdio-mode", outputMode, "Stdio framing: line or content-length")
-	flag.BoolVar(&statsEnabled, "stats-enabled", statsEnabled, "Enable MCP usage stats logging")
-	flag.StringVar(&statsPath, "stats-path", statsPath, "Path for MCP usage stats log (jsonl)")
-	flag.Float64Var(&statsSample, "stats-sample-rate", statsSample, "Sample rate for stats logging (0-1)")
-	flag.Int64Var(&maxFileBytes, "max-file-bytes", maxFileBytes, "Max bytes to read per file")
-	flag.IntVar(&maxSearch, "max-search-results", maxSearch, "Max search results")
-	flag.IntVar(&maxDepth, "max-depth", maxDepth, "Max directory depth for listing")
-	flag.Parse()
-
-	// Resolve root path
+// resolvePaths resolves all data paths relative to root and returns a Config.
+func resolvePaths(ev envValues) (Config, error) {
+	root := ev.root
 	if root == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -122,86 +137,108 @@ func Load() (Config, error) {
 		root = cwd
 	}
 
-	root, err := filepath.Abs(root)
+	var err error
+	root, err = filepath.Abs(root)
 	if err != nil {
 		return Config{}, err
 	}
 
-	allowed := splitAllowlist(allow)
+	allowed := splitAllowlist(ev.allow)
 
-	// Set default data paths relative to root
+	dataPath := ev.dataPath
 	if dataPath == "" {
 		dataPath = filepath.Join(root, "data")
 	} else if !filepath.IsAbs(dataPath) {
 		dataPath = filepath.Join(root, dataPath)
 	}
 
+	ragIndexPath := ev.ragIndexPath
 	if ragIndexPath == "" {
 		ragIndexPath = filepath.Join(dataPath, "rag-index")
 	} else if !filepath.IsAbs(ragIndexPath) {
 		ragIndexPath = filepath.Join(root, ragIndexPath)
 	}
 
+	memoryDBPath := ev.memoryDBPath
 	if memoryDBPath == "" {
 		memoryDBPath = filepath.Join(dataPath, "memory-store", "memories.db")
 	} else if !filepath.IsAbs(memoryDBPath) {
 		memoryDBPath = filepath.Join(root, memoryDBPath)
 	}
 
-	if statsEnabled && statsPath == "" {
+	statsPath := ev.statsPath
+	if ev.statsEnabled && statsPath == "" {
 		statsPath = filepath.Join(root, "logs", "mcp-usage.jsonl")
 	}
 
+	logPath := ev.logPath
 	if logPath == "" {
 		logPath = filepath.Join(root, "logs", "mcp-diagnostics.log")
 	} else if !filepath.IsAbs(logPath) {
 		logPath = filepath.Join(root, logPath)
 	}
 
-	// Parse index directories
-	indexDirsList := splitAllowlist(indexDirs)
+	indexDirsList := splitAllowlist(ev.indexDirs)
 
 	return Config{
-		// Core
 		RootPath:         root,
 		AllowedPaths:     allowed,
-		MaxFileBytes:     maxFileBytes,
-		MaxSearchResults: maxSearch,
-		MaxDepth:         maxDepth,
-		OutputMode:       normalizeOutputMode(outputMode),
-		StatsEnabled:     statsEnabled,
+		MaxFileBytes:     ev.maxFileBytes,
+		MaxSearchResults: ev.maxSearch,
+		MaxDepth:         ev.maxDepth,
+		OutputMode:       normalizeOutputMode(ev.outputMode),
+		StatsEnabled:     ev.statsEnabled,
 		StatsPath:        statsPath,
-		StatsSampleRate:  statsSample,
+		StatsSampleRate:  ev.statsSample,
 
-		// Data paths
 		DataPath:     dataPath,
 		RAGIndexPath: ragIndexPath,
 		MemoryDBPath: memoryDBPath,
 		LogPath:      logPath,
 
-		// RAG & Memory
-		RAGEnabled:    ragEnabled,
-		RAGMaxResults: ragMaxResults,
-		MemoryEnabled: memoryEnabled,
+		RAGEnabled:    ev.ragEnabled,
+		RAGMaxResults: ev.ragMaxResults,
+		MemoryEnabled: ev.memoryEnabled,
 
-		// Indexing
 		IndexDirs:     indexDirsList,
-		ChangelogPath: changelogPath,
-		ChunkSize:     chunkSize,
-		ChunkOverlap:  chunkOverlap,
+		ChangelogPath: ev.changelogPath,
+		ChunkSize:     ev.chunkSize,
+		ChunkOverlap:  ev.chunkOverlap,
 
-		// Embeddings
-		JinaAPIKey:         jinaAPIKey,
-		OpenAIAPIKey:       openaiAPIKey,
-		OpenAIBaseURL:      openaiBaseURL,
-		OpenAIModel:        openaiModel,
-		OllamaBaseURL:      ollamaBaseURL,
-		EmbeddingDimension: embeddingDimension,
+		JinaAPIKey:         ev.jinaAPIKey,
+		OpenAIAPIKey:       ev.openaiAPIKey,
+		OpenAIBaseURL:      ev.openaiBaseURL,
+		OpenAIModel:        ev.openaiModel,
+		OllamaBaseURL:      ev.ollamaBaseURL,
+		EmbeddingDimension: ev.embeddingDimension,
 
-		// HTTP
-		HTTPMode: httpMode,
-		HTTPPort: httpPort,
+		HTTPMode: ev.httpMode,
+		HTTPPort: ev.httpPort,
 	}, nil
+}
+
+// LoadFromEnv reads configuration only from environment variables (no flag parsing).
+// Use this for CLI subcommands that define their own flags.
+func LoadFromEnv() (Config, error) {
+	return resolvePaths(loadEnv())
+}
+
+// Load reads configuration from environment variables and command-line flags.
+func Load() (Config, error) {
+	ev := loadEnv()
+
+	flag.StringVar(&ev.root, "root", ev.root, "Repository root (defaults to current dir)")
+	flag.StringVar(&ev.allow, "allow", ev.allow, "Comma-separated allowlist of repo-relative paths")
+	flag.StringVar(&ev.outputMode, "stdio-mode", ev.outputMode, "Stdio framing: line or content-length")
+	flag.BoolVar(&ev.statsEnabled, "stats-enabled", ev.statsEnabled, "Enable MCP usage stats logging")
+	flag.StringVar(&ev.statsPath, "stats-path", ev.statsPath, "Path for MCP usage stats log (jsonl)")
+	flag.Float64Var(&ev.statsSample, "stats-sample-rate", ev.statsSample, "Sample rate for stats logging (0-1)")
+	flag.Int64Var(&ev.maxFileBytes, "max-file-bytes", ev.maxFileBytes, "Max bytes to read per file")
+	flag.IntVar(&ev.maxSearch, "max-search-results", ev.maxSearch, "Max search results")
+	flag.IntVar(&ev.maxDepth, "max-depth", ev.maxDepth, "Max directory depth for listing")
+	flag.Parse()
+
+	return resolvePaths(ev)
 }
 
 func splitAllowlist(raw string) []string {
