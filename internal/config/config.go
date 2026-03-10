@@ -79,6 +79,9 @@ type Config struct {
 	SessionIdleTimeout        time.Duration // Idle timeout before auto-close
 	SessionCheckpointInterval time.Duration // Periodic raw checkpoint interval during active sessions
 	SessionMinEvents          int           // Minimum observed tool events before auto-close
+
+	// Tool grouping
+	ToolGrouping bool // When true, tools/list returns grouped meta-tools with action parameter
 }
 
 // envValues holds raw values read from environment variables before path resolution.
@@ -125,6 +128,7 @@ type envValues struct {
 	sessionIdleTimeout               string
 	sessionCheckpointInterval        string
 	sessionMinEvents                 int
+	toolGrouping                     bool
 }
 
 // loadEnv reads all configuration from environment variables.
@@ -176,6 +180,7 @@ func loadEnv() (envValues, error) {
 		sessionIdleTimeout:               EnvOrDefault("MCP_SESSION_IDLE_TIMEOUT", "10m"),
 		sessionCheckpointInterval:        EnvOrDefault("MCP_SESSION_CHECKPOINT_INTERVAL", "30m"),
 		sessionMinEvents:                 EnvInt("MCP_SESSION_MIN_EVENTS", 2),
+		toolGrouping:                     EnvBool("MCP_TOOL_GROUPING", false),
 	}, nil
 }
 
@@ -288,6 +293,7 @@ func resolvePaths(ev envValues) (Config, error) {
 		SessionIdleTimeout:               parseDurationOrDefault(ev.sessionIdleTimeout, 10*time.Minute),
 		SessionCheckpointInterval:        parseDurationOrDefault(ev.sessionCheckpointInterval, 30*time.Minute),
 		SessionMinEvents:                 sessionMinEvents,
+		ToolGrouping:                     ev.toolGrouping,
 	}
 	if err := validateResolvedConfig(cfg); err != nil {
 		return Config{}, err
