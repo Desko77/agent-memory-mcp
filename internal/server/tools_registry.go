@@ -89,6 +89,9 @@ var sessionAnalysisSchema = map[string]any{
 }
 
 func (s *MCPServer) handleToolsList(_ json.RawMessage) (any, *rpcError) {
+	if s.config.ToolGrouping {
+		return map[string]any{"tools": s.groupedToolsList()}, nil
+	}
 	tools := []tool{
 		{
 			Name:        "repo_list",
@@ -915,7 +918,8 @@ var hybridTools = map[string]bool{
 type toolHandler func(args map[string]any) (any, *rpcError)
 
 func (s *MCPServer) buildToolHandlers() map[string]toolHandler {
-	return map[string]toolHandler{
+	handlers := map[string]toolHandler{
+		// Individual tool handlers (always registered for backward compatibility)
 		"repo_list":                  s.callRepoList,
 		"repo_read":                  s.callRepoRead,
 		"repo_search":                s.callRepoSearch,
@@ -948,6 +952,13 @@ func (s *MCPServer) buildToolHandlers() map[string]toolHandler {
 		"summarize_project_context":  s.callSummarizeProjectContext,
 		"project_bank_view":          s.callProjectBankView,
 	}
+
+	// Register grouped meta-tool dispatchers (always available for dispatch)
+	for _, g := range s.buildToolGroupDefs() {
+		handlers[g.name] = s.buildGroupDispatcher(g)
+	}
+
+	return handlers
 }
 
 func (s *MCPServer) handleToolsCall(params json.RawMessage) (any, *rpcError) {
@@ -975,9 +986,12 @@ func (s *MCPServer) handleToolsCall(params json.RawMessage) (any, *rpcError) {
 	}
 
 	result, rErr := handler(req.Arguments)
-	s.logToolEvent(req.Name, req.Arguments, start, rErr)
+
+	// Resolve grouped meta-tool names to legacy names for granular logging/tracking.
+	logName := resolveGroupedToolName(req.Name, req.Arguments, s.buildToolGroupDefs())
+	s.logToolEvent(logName, req.Arguments, start, rErr)
 	if s.sessionTracker != nil {
-		s.sessionTracker.HandleToolCall(req.Name, req.Arguments, rErr)
+		s.sessionTracker.HandleToolCall(logName, req.Arguments, rErr)
 	}
 	return result, rErr
 }
